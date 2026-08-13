@@ -1,0 +1,20 @@
+
+ ============================================
+ 100x Resume - Candidate Verification Platform
+ ============================================
+
+[setup] Checking backend dependencies...
+
+[start] Launching backend - report API on http://localhost:8000
+[start] Launching frontend - UI on http://localhost:3000
+
+ ============================================
+ 100x Resume is starting...
+
+   UI       : http://localhost:3000
+   API docs : http://localhost:8000/docs
+
+ Tip: click "Load demo candidate" on the Connect step
+      for a full end-to-end demo without any accounts.
+ ============================================
+

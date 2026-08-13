@@ -1,0 +1,69 @@
+@import "tailwindcss";
+
+@theme {
+  --color-canvas: #fafafb;
+  --color-surface: #ffffff;
+  --color-line: #e6e8ef;
+  --color-line-strong: #d4d8e3;
+  --color-ink: #0b0f19;
+  --color-ink-2: #3a4256;
+  --color-muted: #626b7e;
+  --color-accent: #5b5bd6;
+  --color-accent-strong: #4545c9;
+  --color-accent-soft: #eeedfc;
+  --color-emerald: #0ea371;
+  --color-emerald-soft: #e7f7f0;
+  --color-teal: #14b8a6;
+  --color-teal-soft: #e6f7f5;
+  --color-amber: #d97706;
+  --color-amber-soft: #fbf1df;
+  --color-orange: #ea7317;
+  --color-orange-soft: #fdeee3;
+  --color-rose: #e11d48;
+  --color-rose-soft: #fde8ee;
+  --color-slate: #8a94a6;
+  --color-slate-soft: #f1f3f7;
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* subtle dotted grid backdrop for hero sections */
+.grid-backdrop {
+  background-image: radial-gradient(circle, var(--color-line) 1px, transparent 1px);
+  background-size: 22px 22px;
+}
+
+/* thin scrollbars for tables */
+.thin-scroll::-webkit-scrollbar {
+  height: 6px;
+  width: 6px;
+}
+.thin-scroll::-webkit-scrollbar-thumb {
+  background: var(--color-line-strong);
+  border-radius: 3px;
+}
+
+/* print: hide nav/footer, expand cards */
+@media print {
+  .no-print {
+    display: none !important;
+  }
+  body {
+    background: white;
+  }
+  .print-flat {
+    box-shadow: none !important;
+    border-color: var(--color-line) !important;
+  }
+}
