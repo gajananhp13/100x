@@ -30,6 +30,7 @@ export interface Experience {
   company?: string | null;
   position?: string | null;
   duration?: string | null;
+  is_current?: boolean;
   responsibilities: string[];
   technologies: string[];
 }
@@ -229,6 +230,34 @@ export interface PlatformCategory {
 export interface PlatformsResponse {
   categories: Record<string, PlatformDef[]>;
   platforms: PlatformDef[];
+}
+
+/** A single resume inside an HR batch (multi-resume ranking flow). */
+export interface ResumeBatchCandidate {
+  index: number;
+  filename: string;
+  resume: ParsedResume;
+  text_preview?: string;
+  profiles?: ConnectedProfile[];
+  detected?: Record<string, string>;
+  report_id?: string;
+  candidate_name?: string;
+  overall_score?: number;
+  rank?: number;
+  scores?: ScoreItem[];
+}
+
+/** Server response for batch upload and batch validate. */
+export interface ResumeBatchResult {
+  processed: number;
+  failed: number;
+  candidates: ResumeBatchCandidate[];
+  errors: Array<{ filename: string; detail: string }>;
+}
+
+/** Server response for batch connect. */
+export interface ResumeBatchConnectResult {
+  candidates: ResumeBatchCandidate[];
 }
 
 export const SKILL_CATEGORY_LABELS: Record<string, string> = {

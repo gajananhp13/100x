@@ -236,18 +236,34 @@ def render_pdf(report) -> bytes:
     if edu:
         rows.append(["Education", f"{edu.degree or 'Degree'} — {edu.branch or ''} @ {edu.college or 'College'} ({edu.graduation_year or ''}) GPA {edu.gpa or ''}".replace("  ", " ")])
     for e in a.resume.experience[:2]:
-        rows.append(["Experience", f"{e.position or ''} at {e.company or ''} ({e.duration or ''})"])
+        comp_str = f" @ {e.company}" if e.company else ""
+        rows.append(["Experience", f"{e.position or ''}{comp_str} ({e.duration or ''})"])
     links = [x for x in [p.linkedin and Paragraph(f"LinkedIn: {p.linkedin}", st["small"]).getPlainText(), p.github, p.portfolio] if x]
     rows.append(["Contact Links", ", ".join(links) if links else "—"])
     story.append(_table([[Paragraph(c, st["cellb"]), Paragraph(str(v), st["cell"])] for c, v in rows], [28 * mm, 145 * mm]))
 
     # ---------- 2. Resume Summary ----------
     story.append(_section_header("2. Resume Summary"))
-    exp_brief = "; ".join(f"{e.position} @ {e.company}" for e in a.resume.experience[:3]) or "No experience listed"
+    experiences = a.resume.experience
+    current_exp = next((e for e in experiences if e.is_current), None)
+    past_exps = [e for e in experiences if not e.is_current]
+
+    def _fmt_exp(e: Experience) -> str:
+        pos = e.position or "Unknown Role"
+        comp = e.company
+        return f"{pos} @ {comp}" if comp else pos
+
+    if current_exp:
+        exp_brief = f"Currently: {_fmt_exp(current_exp)}"
+        if past_exps:
+            exp_brief += ". Past: " + "; ".join(_fmt_exp(e) for e in past_exps)
+    else:
+        exp_brief = "; ".join(_fmt_exp(e) for e in experiences[:3]) or "No experience listed"
+
     skills_brief = ", ".join(a.resume.all_skill_names()[:14])
     proj_brief = "; ".join(pr.name or "" for pr in a.resume.projects[:4]) or "No projects listed"
     story.append(Paragraph(
-        f"{p.name or 'The candidate'} is a {len(a.resume.experience)}-role professional ({exp_brief}). "
+        f"{p.name or 'The candidate'} is a {len(experiences)}-role professional ({exp_brief}). "
         f"Skills include {skills_brief}. Portfolio projects: {proj_brief}.",
         st["body"]))
 
@@ -332,18 +348,40 @@ def render_pdf(report) -> bytes:
             story.append(Paragraph(f"• {ev}", st["small"]))
         story.append(Spacer(1, 3))
 
-    # ---------- 9. Strengths ----------
-    story.append(_section_header("9. Strengths"))
+    # ---------- 9. LinkedIn Certifications ----------
+    linkedin_profiles = [p for p in a.profiles if p.platform == "linkedin" and p.status == "collected"]
+    linkedin_certs = []
+    for prof in linkedin_profiles:
+        for c in (prof.data or {}).get("certifications") or []:
+            linkedin_certs.append(c)
+    if linkedin_profiles:
+        story.append(_section_header("9. LinkedIn Certifications"))
+        if linkedin_certs:
+            rows = [["Certification", "Issuer", "Issued", "Credential ID"]]
+            for c in linkedin_certs:
+                rows.append([
+                    Paragraph(c.get("title") or "—", st["cell"]),
+                    Paragraph(c.get("issuer") or "—", st["cell"]),
+                    Paragraph(c.get("issued_date") or "—", st["cell"]),
+                    Paragraph(c.get("credential_id") or "—", st["cell"]),
+                ])
+            story.append(_table(rows, [58 * mm, 50 * mm, 30 * mm, 35 * mm]))
+        else:
+            story.append(Paragraph("No certifications listed on the connected LinkedIn profile.", st["body"]))
+        story.append(Spacer(1, 4))
+
+    # ---------- 10. Strengths ----------
+    story.append(_section_header("10. Strengths"))
     for s in a.strengths:
         story.append(Paragraph(f"• {s}", st["body"]))
 
-    # ---------- 10. Improvement Areas ----------
-    story.append(_section_header("10. Improvement Areas"))
+    # ---------- 11. Improvement Areas ----------
+    story.append(_section_header("11. Improvement Areas"))
     for s in a.improvements:
         story.append(Paragraph(f"• {s}", st["body"]))
 
-    # ---------- 11. AI Summary ----------
-    story.append(_section_header("11. AI Summary"))
+    # ---------- 12. AI Summary ----------
+    story.append(_section_header("12. AI Summary"))
     for key, label in [("technical_strengths", "Technical Strengths"), ("engineering_profile", "Engineering Profile"),
                        ("coding_ability", "Coding Ability"), ("project_quality", "Project Quality"),
                        ("collaboration_indicators", "Collaboration Indicators"),
@@ -352,9 +390,9 @@ def render_pdf(report) -> bytes:
             story.append(Paragraph(f"<b>{label}:</b> {a.ai_summary[key]}", st["body"]))
             story.append(Spacer(1, 3))
 
-    # ---------- 12. Final Scores ----------
+    # ---------- 13. Final Scores ----------
     story.append(PageBreak())
-    story.append(_section_header("12. Final Scores"))
+    story.append(_section_header("13. Final Scores"))
     score_items = a.scores
     story.append(RadarChart([(s.label.replace(" Score", ""), s.value) for s in score_items], size=165))
     story.append(Spacer(1, 10))

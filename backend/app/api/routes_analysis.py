@@ -3,9 +3,11 @@ then stores and returns the Candidate Report."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 from fastapi import APIRouter, HTTPException
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 
 from ..core.analysis import run_analysis
@@ -71,3 +73,62 @@ async def list_reports() -> list[dict]:
         }
         for r in store.list()
     ]
+
+
+MAX_BATCH_CANDIDATES = 50
+
+
+@router.post("/batch")
+async def run_batch(payload: dict) -> dict:
+    """Run the full verification + scoring pipeline across a batch of resumes.
+
+    Each candidate is analysed independently (profiles already connected via the
+    HR 'connect all social media' step), stored as its own Candidate Report, and
+    the batch is returned ranked by overall score — the HR candidate leaderboard.
+    """
+    raw_candidates = payload.get("candidates") or []
+    ai_mode = payload.get("ai_mode")
+    if not raw_candidates:
+        raise HTTPException(status_code=422, detail="candidates is required.")
+    if len(raw_candidates) > MAX_BATCH_CANDIDATES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Too many candidates. Analyse at most {MAX_BATCH_CANDIDATES} per batch.",
+        )
+
+    async def process(c: dict) -> dict:
+        index = c.get("index")
+        filename = c.get("filename")
+        try:
+            resume = ParsedResume.model_validate(c.get("resume"))
+            profiles = [ConnectedProfile.model_validate(p) for p in c.get("profiles", [])]
+        except Exception as e:  # noqa: BLE001
+            return {"index": index, "filename": filename, "error": f"Invalid candidate payload: {e}"}
+        try:
+            bundle = await run_in_threadpool(run_analysis, resume, profiles, lambda s, m: None, ai_mode)
+        except Exception as e:  # noqa: BLE001 - one candidate must not sink the batch
+            return {"index": index, "filename": filename, "error": f"Analysis failed: {e}"}
+        report = store.save(bundle)
+        return {
+            "index": index,
+            "filename": filename,
+            "report_id": report.report_id,
+            "candidate_name": resume.personal.name or "Candidate",
+            "overall_score": report.analysis.overall_score,
+            "scores": [s.model_dump(mode="json") for s in report.analysis.scores],
+        }
+
+    results = await asyncio.gather(*[process(c) for c in raw_candidates])
+    candidates = [r for r in results if "error" not in r]
+    errors = [r for r in results if "error" in r]
+
+    candidates.sort(key=lambda r: float(r.get("overall_score") or 0), reverse=True)
+    for rank, c in enumerate(candidates, 1):
+        c["rank"] = rank
+
+    return {
+        "processed": len(candidates),
+        "failed": len(errors),
+        "candidates": candidates,
+        "errors": errors,
+    }

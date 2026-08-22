@@ -24,6 +24,7 @@ class Experience(BaseModel):
     company: str | None = None
     position: str | None = None
     duration: str | None = None
+    is_current: bool = False
     responsibilities: list[str] = Field(default_factory=list)
     technologies: list[str] = Field(default_factory=list)
 

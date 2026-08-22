@@ -20,7 +20,6 @@ _PATTERNS: dict[str, tuple[str, int]] = {
     "bitbucket": (r"bitbucket\.org\/(?:workspaces\/)?([a-z0-9][a-z0-9._-]{0,38})", 1),
     "linkedin": (r"linkedin\.com\/in\/([a-z0-9][a-z0-9._-]{0,90})", 1),
     "devpost": (r"devpost\.com\/([a-z0-9][a-z0-9-]{0,38})", 1),
-    "kaggle": (r"kaggle\.com\/([a-z0-9][a-z0-9-]{0,38})", 1),
     "leetcode": (r"leetcode\.com\/u\/([a-z0-9][a-z0-9_-]{0,38})", 1),
     "interviewbit": (r"interviewbit\.com\/profile\/([a-z0-9][a-z0-9._-]{0,50})", 1),
     "codeforces": (r"codeforces\.com\/profile\/([a-z0-9][a-z0-9_.-]{0,38})", 1),
@@ -28,20 +27,6 @@ _PATTERNS: dict[str, tuple[str, int]] = {
     "geeksforgeeks": (r"(?:auth\.)?geeksforgeeks\.org\/user\/([a-z0-9][a-z0-9._-]{0,50})", 1),
     "hackerrank": (r"hackerrank\.com\/([a-z0-9][a-z0-9._-]{0,38})", 1),
     "stackoverflow": (r"stackoverflow\.com\/users\/(\d+)(?:\/[a-z0-9-]+)?", 1),
-    "medium": (r"medium\.com\/@([a-z0-9][a-z0-9._-]{0,50})", 1),
-    "hashnode": (r"hashnode\.(?:com|dev)\/@([a-z0-9][a-z0-9._-]{0,50})", 1),
-    "devto": (r"dev\.to\/([a-z0-9][a-z0-9-]{0,38})", 1),
-    "twitter": (r"(?:twitter\.com|x\.com)\/([a-z0-9_]{1,15})", 1),
-}
-
-# Text-based fallback patterns: match platform name followed by a handle-like handle string.
-# This catches cases where the platform is mentioned in the resume (e.g. "LeetCode aarav-mehta",
-# "CodeChef 3-star rating 1740") without a URL.
-_TEXT_PATTERNS: dict[str, tuple[str, int]] = {
-    "leetcode": (r"leetcode\s+([a-z0-9][a-z0-9_-]{0,38})", 1),
-    "codechef": (r"codechef\s+([a-z0-9][a-z0-9._-]{0,38})", 1),
-    "kaggle": (r"kaggle\s+([a-z0-9][a-z0-9_-]{0,38})", 1),
-    "hackerrank": (r"hackerrank\s+([a-z0-9][a-z0-9._-]{0,38})", 1),
 }
 
 # fallback shorthand patterns tried when the canonical URL form is absent
@@ -55,10 +40,6 @@ _BLOCKED: dict[str, set[str]] = {
     "leetcode": {"problems", "problemset", "contest", "contests", "explore", "studyplan", "discuss", "interview", "store", "submissions"},
     "hackerrank": {"dashboard", "profile", "domains", "skills", "events", "careers", "contests", "challenges", "login", "signup"},
     "devpost": {"software", "devpost", "api", "challenges", "about", "legal", "terms", "profile"},
-    "kaggle": {"c", "competitions", "datasets", "models", "code", "discussion", "learn", "docs"},
-    "devto": {"sign_in", "sign-up", "settings", "new", "top", "feed", "latest", "tags", "podcasts", "videos", "about", "search"},
-    "twitter": {"home", "explore", "settings", "search", "i", "hashtag", "notifications", "login", "signup", "share", "intent", "tweet", "messages", "x"},
-    "medium": {"login", "sign-up", "about", "create", "settings", "topics", "newsletters", "privacy", "me", "search"},
     "stackoverflow": {"questions", "tags", "users", "jobs", "search"},
 }
 
@@ -100,34 +81,22 @@ def detect_handle(platform_id: str, resume: ParsedResume) -> str | None:
         return _clean(url, "portfolio") or None
 
     entry = _PATTERNS.get(platform_id)
-    if entry:
-        pattern, group = entry
-        for source in _text_sources(resume):
-            m = re.search(pattern, source, re.IGNORECASE)
-            if m:
-                handle = _clean(m.group(group), platform_id)
-                if handle:
-                    return handle
+    if not entry:
+        return None
+    pattern, group = entry
 
-    # Fallback: try text-based platform name + handle matching (e.g. "LeetCode aaravmehta")
-    text_pattern = re.compile(rf"{platform_id}\s+([a-z0-9][a-z0-9_-]{0,38})", re.IGNORECASE)
     for source in _text_sources(resume):
-        m = text_pattern.search(source)
-        if m:
-            handle = _clean(m.group(1), platform_id)
-            if handle:
-                return handle
-
-    # Also try leetcode.com/username (without /u/ segment) as a shorthand
-    if platform_id == "leetcode":
-        short_pattern = re.compile(r"(?:leetcode\.com\/)(?!u\/)([a-z0-9][a-z0-9_-]{1,38})", re.IGNORECASE)
-        for source in _text_sources(resume):
-            m = short_pattern.search(source)
-            if m:
-                handle = _clean(m.group(1), platform_id)
-                if handle:
-                    return handle
-
+        m = re.search(pattern, source, re.IGNORECASE)
+        # leetcode shorthand: leetcode.com/<user> without the /u/ segment
+        if not m and platform_id in _SHORTHAND:
+            short_pat, short_group = _SHORTHAND[platform_id]
+            m = re.search(short_pat, source, re.IGNORECASE)
+            group = short_group
+        if not m:
+            continue
+        handle = _clean(m.group(group), platform_id)
+        if handle:
+            return handle
     return None
 
 

@@ -83,7 +83,13 @@ export default function ReportView({ reportId }: { reportId: string }) {
               Candidate Report · {new Date(report.generated_at).toLocaleString()}
             </span>
           </div>
-          <div className="flex items-center gap-2">
+           <div className="flex items-center gap-2">
+            <Link
+              href="/hr"
+              className="rounded-lg border border-line-strong bg-surface px-3 py-1.5 text-xs font-medium text-ink transition-colors hover:border-ink/30"
+            >
+              HR ranking
+            </Link>
             <Button variant="outline" size="sm" onClick={() => window.print()}>
               Print
             </Button>

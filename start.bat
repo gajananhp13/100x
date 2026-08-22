@@ -23,6 +23,9 @@ if "%NEED_BACKEND%"=="1" (
     if errorlevel 1 goto :fail_pip
 )
 
+echo [setup] Ensuring Playwright Chromium browser is installed (for LinkedIn scraping)...
+"backend\.venv\Scripts\python.exe" -m playwright install chromium >nul 2>&1 || echo [warn] Playwright Chromium install skipped/failed (LinkedIn live scraping will need it).
+
 if not exist "frontend\node_modules" (
     echo [setup] Installing frontend dependencies - first run, may take a while...
     pushd "frontend"

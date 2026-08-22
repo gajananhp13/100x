@@ -1,19 +1,31 @@
-"""GitHub integration — live public API plus an offline simulation.
+"""GitHub integration — live public HTML scraper plus offline simulation.
 
-Fetches user profile, repositories, languages, commit activity, PR/issue
-counts, README presence/quality signals, CI/CD workflows, Dockerfiles and
-licenses via api.github.com. Works unauthenticated (60 req/hr) or with a
-GITHUB_TOKEN (5,000 req/hr) set in the environment.
+Fetches a user's profile and repository list directly from GitHub's public web
+pages (github.com/{handle} and the ?tab=repositories[...] listing) using
+realistic browser headers. No API token and no GitHub REST API are required, so
+there is no hard per-hour quota the way the old api.github.com path had.
 
-Per-repo enrichment is best-effort: GitHub returns 409 for empty repos
-(no commits), so a single edge-case repo never fails the whole profile.
+What maps cleanly from the HTML pages:
+  - profile: name, login, avatar, bio, location, followers/following,
+    public repo count, "X repositories available"
+  - repositories (paginated): name, description, primary language, stars,
+    forks, is-fork flag, topics, last-pushed date
+  - per-repo (best-effort, top-N): README presence + quality (server-rendered)
+
+Fields the REST API exposed but GitHub's plain HTML pages don't (commit counts,
+contributors, CI/Dockerfile detection, recursive file trees, per-repo language
+byte breakdown) are reported with safe defaults (0/False/empty) and marked in
+`_rate_limit_hint` as "HTML-page best effort" so downstream analysis treats
+them as unknown rather than guessed.
+
+Results are cached in-memory for 1 hour to avoid hammering the public site.
 """
 
 from __future__ import annotations
 
-import os
 import random
 import re
+import time
 
 import httpx
 
@@ -23,9 +35,97 @@ from .mixin import SimulatedPlatformMixin
 
 DEF = PlatformDef("github", "GitHub", "gh", "https://github.com/{handle}", "username", True)
 
-API = "https://api.github.com"
-PER_PAGE = 100
+BASE = "https://github.com"
+CACHE_TTL_MS = 60 * 60 * 1000  # 1 hour
 
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+)
+
+HEADERS: dict[str, str] = {
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "User-Agent": USER_AGENT,
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
+MAX_PAGES = 10
+MAX_REPOS = 100
+README_REPO_LIMIT = 12
+
+
+# ---------------------------------------------------------------------- #
+# Username parsing
+# ---------------------------------------------------------------------- #
+
+def extract_username(input_value: str) -> str:
+    """Extract a clean username from a handle, @handle, or profile URL."""
+    trimmed = input_value.strip()
+    url_match = re.search(r"github\.com/([A-Za-z0-9][A-Za-z0-9-]*)", trimmed)
+    if url_match:
+        return url_match.group(1)
+    clean = trimmed.lstrip("@").rstrip("/")
+    if clean and re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})", clean):
+        return clean
+    raise ProfileCollectError(f'Invalid GitHub username or URL: "{input_value}"')
+
+
+# ---------------------------------------------------------------------- #
+# In-memory TTL cache
+# ---------------------------------------------------------------------- #
+
+_memory_store: dict[str, tuple[dict, float]] = {}
+
+
+def _cache_get(username: str) -> dict | None:
+    entry = _memory_store.get(username.lower())
+    if entry is None:
+        return None
+    data, expires_at = entry
+    if time.time() * 1000 > expires_at:
+        _memory_store.pop(username.lower(), None)
+        return None
+    return data
+
+
+def _cache_set(username: str, data: dict) -> None:
+    _memory_store[username.lower()] = (data, time.time() * 1000 + CACHE_TTL_MS)
+
+
+def clear_github_cache() -> None:
+    """Clear the in-memory cache (used by tests)."""
+    _memory_store.clear()
+
+
+# ---------------------------------------------------------------------- #
+# Number / text helpers
+# ---------------------------------------------------------------------- #
+
+def _parse_count(value: str | None) -> int:
+    """Parse Github's compact counts: '317k' -> 317000, '1.2k' -> 1200, '0' -> 0."""
+    if not value:
+        return 0
+    text = value.strip().replace(",", "")
+    m = re.match(r"^([\d.]+)\s*([kKmM]?)$", text)
+    if not m:
+        return 0
+    number = float(m.group(1))
+    multiplier = {"k": 1000, "m": 1000000}.get(m.group(2).lower(), 1)
+    return int(round(number * multiplier))
+
+
+def _strip_tags(html: str) -> str:
+    text = re.sub(r"<[^>]+>", " ", html)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _trim(value: str | None) -> str:
+    return re.sub(r"\s+", " ", value or "").strip()
+
+
+# ---------------------------------------------------------------------- #
+# Integration
+# ---------------------------------------------------------------------- #
 
 class GitHubIntegration(SimulatedPlatformMixin):
     platform_id = "github"
@@ -34,265 +134,351 @@ class GitHubIntegration(SimulatedPlatformMixin):
 
     def __init__(
         self,
-        token: str | None = None,
         transport: httpx.BaseTransport | None = None,
         simulate: bool = False,
     ) -> None:
         super().__init__(simulate=simulate)
-        self.token = token or os.getenv("GITHUB_TOKEN") or ""
         self._transport = transport
-        self._headers = {
-            "Accept": "application/vnd.github+json",
-            "User-Agent": "100xResume",
-            **({"Authorization": f"Bearer {self.token}"} if self.token else {}),
+
+    # ------------------------------------------------------------------ #
+    # Live HTML helpers
+    # ------------------------------------------------------------------ #
+
+    def _get_html(self, url: str) -> httpx.Response:
+        with httpx.Client(timeout=25, headers=HEADERS, transport=self._transport) as client:
+            resp = client.get(url, follow_redirects=True)
+        if resp.status_code in (403, 429):
+            raise ProfileCollectError(
+                "GitHub is temporarily blocking this request. Wait a moment and try again "
+                "(this is not a token quota — the HTML scraper needs no token)."
+            )
+        if resp.status_code == 404:
+            raise ProfileCollectError(f'GitHub user "{url.split("/")[-1]}" not found — check the username.')
+        if resp.status_code >= 400:
+            raise ProfileCollectError(f"GitHub returned HTTP {resp.status_code}.")
+        return resp
+
+    def _profile_url(self, handle: str) -> str:
+        return f"{BASE}/{handle}"
+
+    def _repos_url(self, handle: str, page: int) -> str:
+        return f"{BASE}/{handle}?tab=repositories&page={page}"
+
+    def _repo_url(self, full_name: str) -> str:
+        return f"{BASE}/{full_name}"
+
+    # ------------------------------------------------------------------ #
+    # Parsers
+    # ------------------------------------------------------------------ #
+
+    def _parse_profile(self, html: str, handle: str) -> dict:
+        """Extract profile-level fields from the profile HTML page."""
+        data: dict = {}
+        data["login"] = handle
+
+        # Personal vs organization guard: personal accounts render a vcard block.
+        if 'class="vcard-details"' not in html and 'class="vcard-names"' not in html:
+            raise ProfileCollectError("Use a personal GitHub account, not an organization.")
+
+        # repositories available (public repo count)
+        m = re.search(r"([\d,]+(?:\.[\d]+)?[kKmM]?)\s+repositories\s+available", html)
+        if m:
+            data["public_repos"] = _parse_count(m.group(1))
+
+        # followers / following (compact counts supported)
+        m = re.search(
+            r'tab=followers"[^>]*>.*?<span class="text-bold color-fg-default">([\d.,]+[kKmM]?)</span>\s*followers',
+            html, re.DOTALL,
+        )
+        if m:
+            data["followers"] = _parse_count(m.group(1))
+        m = re.search(
+            r'tab=following"[^>]*>.*?<span class="text-bold color-fg-default">([\d.,]+[kKmM]?)</span>\s*following',
+            html, re.DOTALL,
+        )
+        if m:
+            data["following"] = _parse_count(m.group(1))
+
+        # avatar
+        m = re.search(r'<meta property="og:image" content="([^"]+)"', html)
+        if not m:
+            m = re.search(r'<img[^>]+class="avatar[^"]*"[^>]+src="([^"]+)"', html)
+        if m:
+            data["avatar_url"] = m.group(1).split("?")[0]
+
+        # name
+        m = re.search(r'itemprop="name"[^>]*>\s*([^<]+)', html)
+        if m:
+            data["name"] = _trim(m.group(1))
+
+        # bio
+        m = re.search(
+            r'itemprop="description"[^>]*>\s*(.*?)\s*</(?:div|p)>',
+            html, re.DOTALL,
+        )
+        if m:
+            data["bio"] = _trim(_strip_tags(m.group(1)))
+
+        # location
+        m = re.search(r'aria-label="Location: ([^"]*)"', html)
+        if m:
+            data["location"] = _trim(m.group(1))
+
+        # total contributions heading (best-effort: 'X contributions in the last year')
+        m = re.search(
+            r"([\d,]+(?:\.[\d]+)?[kKmM]?)\s+contributions?\s+(?:in the last year|this year)",
+            html, re.IGNORECASE,
+        )
+        if m:
+            data["total_contributions"] = _parse_count(m.group(1))
+
+        return data
+
+    def _parse_repo_list(self, html: str) -> list[dict]:
+        """Parse the repository listing items from a ?tab=repositories page."""
+        repos: list[dict] = []
+        for li in re.findall(r'<li[^>]*itemprop="owns"[^>]*>.*?</li>', html, re.DOTALL):
+            # Repo name + link (also used to detect a fork by the card class)
+            m = re.search(r'<a href="(/[^"]+)" itemprop="name codeRepository"[^>]*>\s*([^<]+)', li)
+            if not m:
+                continue
+            path = m.group(1)
+            name = _trim(m.group(2))
+            if not path or "/" not in path.lstrip("/"):
+                continue
+            owner, _repo = path.strip("/").split("/", 1)
+            is_fork = bool(re.search(r'class="[^"]*public fork[^"]*"', li))
+
+            # description
+            m = re.search(r'itemprop="description">\s*(.*?)\s*</p>', li, re.DOTALL)
+            description = _trim(_strip_tags(m.group(1))) if m else None
+
+            # primary language
+            language = None
+            m = re.search(r'itemprop="programmingLanguage">\s*([^<]+)<', li)
+            if m:
+                language = _trim(m.group(1))
+
+            # stars / forks
+            stars = 0
+            m = re.search(r'href="/[^"]*(?:/|/)stargazers"[^>]*>.*?</svg>\s*([\d.,]+[kKmM]?\s?)</a>', li, re.DOTALL)
+            if not m:
+                m = re.search(r'/[^"]*/stargazers".*?</svg>\s*([\d.,]+[kKmM]?)\s*</a>', li, re.DOTALL)
+            if m:
+                stars = _parse_count(m.group(1))
+            forks = 0
+            m = re.search(r'/[^"]*/forks".*?</svg>\s*([\d.,]+[kKmM]?)\s*</a>', li, re.DOTALL)
+            if m:
+                forks = _parse_count(m.group(1))
+
+            # topics
+            topics = [
+                _trim(tm.group(1))
+                for tm in re.finditer(r'data-octo-dimensions="[^"]*topic[^"]*"[^>]*>\s*([^<]+)', li)
+            ]
+
+            # last pushed / updated
+            pushed_at = None
+            m = re.search(r'<relative-time[^>]*datetime="([^"]+)"', li)
+            if m:
+                pushed_at = m.group(1)
+            m = re.search(r'aria-label="Updated on ([^"]+)"', li)
+            if not pushed_at and m:
+                pushed_at = m.group(1)
+            if pushed_at and pushed_at.endswith("Z"):
+                pushed_at = pushed_at[:-1] + "+00:00"
+
+            repos.append({
+                "name": name,
+                "full_name": f"{owner}/{_repo}",
+                "description": description,
+                "html_url": f"{BASE}/{path}",
+                "language": language,
+                "stars": stars,
+                "forks": forks,
+                "topics": topics,
+                "pushed_at": pushed_at,
+                "is_fork": is_fork,
+            })
+        return repos
+
+    def _next_page(self, html: str) -> str | None:
+        """Return the href of the next repositories page, if any."""
+        m = re.search(r'rel="next"[^>]*href="([^"]*)"', html)
+        if not m:
+            m = re.search(r'aria-label="Next Page"[^>]*href="([^"]*)"', html)
+        if not m:
+            return None
+        return m.group(1).replace("&amp;", "&")
+
+    def _readme_quality(self, repo_html: str) -> tuple[bool, float]:
+        """README presence + quality 0..1 from a server-rendered repo page."""
+        m = re.search(r'<article[^>]*class="markdown-body[^"]*"[^>]*>(.*?)</article>', repo_html, re.DOTALL)
+        if not m:
+            return False, 0.0
+        text = _strip_tags(m.group(1)).lower()
+        if not text:
+            return False, 0.0
+        checks = {
+            "length": len(text) > 400,
+            "overview": bool(text.strip()),
+            "sections": sum(
+                1 for s in ("##", "###", "getting started", "usage", "install", "license", "contributing", "api", "setup")
+                if s in text
+            ) >= 2,
+            "code_blocks": "```" in text or "npm install" in text or "pip install" in text,
+            "badges": "![image]" in text or "img.shields.io" in text,
+            "links": "http" in text,
         }
-
-    # ------------------------------------------------------------------ #
-    # Live API helpers
-    # ------------------------------------------------------------------ #
-
-    def _get(self, path: str, params: dict | None = None) -> dict | list | None:
-        with httpx.Client(timeout=20, headers=self._headers, transport=self._transport) as client:
-            resp = client.get(f"{API}{path}", params=params or {})
-            if resp.status_code == 403:
-                raise ProfileCollectError(
-                    "GitHub rate limit reached. Add GITHUB_TOKEN to the backend .env for a higher quota."
-                )
-            if resp.status_code == 404:
-                raise ProfileCollectError("GitHub user not found — check the username.")
-            if resp.status_code == 401:
-                raise ProfileCollectError("GitHub token is invalid.")
-            if resp.status_code >= 400:
-                raise ProfileCollectError(f"GitHub API error {resp.status_code}.")
-            try:
-                return resp.json()
-            except ValueError as e:
-                # e.g. empty body / HTML error page with a 200 status
-                raise ProfileCollectError(
-                    f"GitHub API returned an invalid (non-JSON) response for {path}. "
-                    "Try again in a moment or add GITHUB_TOKEN to backend/.env."
-                ) from e
-
-    def _get_list(self, path: str, max_pages: int = 3) -> list[dict]:
-        out: list[dict] = []
-        page = 1
-        while page <= max_pages:
-            chunk = self._get(path, {"per_page": PER_PAGE, "page": page})
-            if not isinstance(chunk, list) or not chunk:
-                break
-            out.extend(chunk)
-            if len(chunk) < PER_PAGE:
-                break
-            page += 1
-        return out
-
-    def _repo_tree(self, repo_full: str, branch: str) -> set[str]:
-        """Full recursive tree of file paths (limit to a sane size)."""
-        paths: set[str] = set()
-        try:
-            tree = self._get(f"/repos/{repo_full}/git/trees/{branch}?recursive=1")
-            if isinstance(tree, dict) and isinstance(tree.get("tree"), list):
-                paths = {t.get("path", "") for t in tree["tree"] if t.get("type") == "blob"}
-        except ProfileCollectError:
-            pass
-        return paths
-
-    def _readme_quality(self, repo_full: str) -> tuple[bool, float]:
-        """README presence + heuristic quality 0..1."""
-        try:
-            with httpx.Client(
-                timeout=20,
-                headers={**self._headers, "Accept": "application/vnd.github.raw+json"},
-                transport=self._transport,
-            ) as client:
-                resp = client.get(f"{API}/repos/{repo_full}/readme")
-            if resp.status_code == 404:
-                return False, 0.0
-            if resp.status_code >= 400:
-                raise ProfileCollectError(f"GitHub API error {resp.status_code}.")
-            text = resp.text
-            if text:
-                text = text.lower()
-                checks = {
-                    "length": len(text) > 400,
-                    "overview": bool(text.strip()),
-                    "sections": sum(1 for s in ("##", "###", "getting started", "usage", "install", "license", "contributing", "api", "setup") if s in text) >= 2,
-                    "code_blocks": "```" in text or "```bash" in text or "npm install" in text or "pip install" in text,
-                    "badges": "![image]" in text or "img.shields.io" in text,
-                    "links": "http" in text,
-                }
-                score = sum(checks.values()) / len(checks)
-                return True, score
-        except ProfileCollectError:
-            pass
-        return False, 0.0
+        return True, sum(checks.values()) / len(checks)
 
     # ------------------------------------------------------------------ #
     # Live collection
     # ------------------------------------------------------------------ #
 
     def _collect_real(self, handle: str, context: dict | None = None) -> dict:
-        handle = handle.strip().lstrip("@")
-        if not handle or "/" in handle:
-            raise ProfileCollectError("Enter a valid GitHub username (no URL).")
+        handle = extract_username(handle)
+        cached = _cache_get(handle)
+        if cached is not None:
+            return cached
 
-        user = self._get(f"/users/{handle}")
-        if not isinstance(user, dict):
-            raise ProfileCollectError("GitHub user not found.")
-        if user.get("type") == "Organization":
-            raise ProfileCollectError("Use a personal GitHub account, not an organization.")
+        profile_html = self._get_html(self._profile_url(handle)).text
+        profile = self._parse_profile(profile_html, handle)
 
-        repos = [
-            r for r in self._get_list(f"/users/{handle}/repos", max_pages=3)
-            if isinstance(r, dict) and not r.get("fork") and not r.get("private")
-        ]
+        # Paginated repository listing
+        repos_raw: list[dict] = []
+        page = 1
+        next_path: str | None = None
+        while len(repos_raw) < MAX_REPOS and page <= MAX_PAGES:
+            url = f"{BASE}{next_path}" if next_path else self._repos_url(handle, page)
+            resp = self._get_html(url)
+            chunk = self._parse_repo_list(resp.text)
+            repos_raw.extend(chunk)
+            next_path = self._next_page(resp.text)
+            if not next_path or not chunk:
+                break
+            page += 1
 
+        # Keep public, non-fork repos (consistent with the old API behavior)
+        own_repos = [r for r in repos_raw if not r["is_fork"]]
+
+        # Light per-repo enrichment: README presence/quality for top-N repos
         repo_detail: list[dict] = []
-        total_commits = 0
-        total_forks = 0
+        language_count: dict[str, int] = {}
         total_stars = 0
-        repos_with_ci = 0
-        repos_with_docker = 0
+        total_forks = 0
         repos_with_readme = 0
         readme_sum = 0.0
-        language_totals: dict[str, int] = {}
 
-        for r in repos[:12]:
-            full = r["full_name"]
-            branch = r.get("default_branch") or "main"
-            paths: set[str] = set()
-            try:
-                paths = self._repo_tree(full, branch)
-            except Exception:
-                pass
-            readme_ok, readme_q = self._readme_quality(full)
+        from ...ai.skills_kb import SKILLS
+
+        lang_boost = {
+            "Python": {"Python"},
+            "Java": {"Java"},
+            "JavaScript": {"JavaScript", "Node.js"},
+            "TypeScript": {"TypeScript", "React", "Next.js", "Redux"},
+            "Go": {"Go"},
+            "C++": {"C++"},
+            "C": {"C"},
+            "Ruby": {"Ruby"},
+            "PHP": {"PHP"},
+            "Rust": {"Rust"},
+        }
+
+        for i, r in enumerate(own_repos[:MAX_REPOS]):
+            is_highlight = i < README_REPO_LIMIT
+
+            # README from the repo page (best-effort)
+            readme_ok, readme_q = False, 0.0
             languages: dict[str, float] = {}
-            try:
-                lang_resp = self._get(f"/repos/{full}/languages")
-                if isinstance(lang_resp, dict):
-                    languages = lang_resp
-                    for lang, bytes_count in lang_resp.items():
-                        language_totals[lang] = language_totals.get(lang, 0) + int(bytes_count)
-            except ProfileCollectError:
-                pass  # enrichment is best-effort; never fail the whole profile
+            if is_highlight and r.get("language"):
+                try:
+                    repo_html = self._get_html(self._repo_url(r["full_name"])).text
+                    readme_ok, readme_q = self._readme_quality(repo_html)
+                    languages = {r["language"]: 1.0}
+                except ProfileCollectError:
+                    pass
 
-            ci = any(p.lower().startswith(".github/workflows/") for p in paths)
-            docker = any(("dockerfile" in p.lower() or "docker-compose" in p.lower()) for p in paths)
+            if readme_ok:
+                repos_with_readme += 1
+                readme_sum += readme_q
+            if r.get("language"):
+                language_count[r["language"]] = language_count.get(r["language"], 0) + 1
+            stars = int(r.get("stars") or 0)
+            forks = int(r.get("forks") or 0)
+            total_stars += stars
+            total_forks += forks
 
-            # tech evidence scan: file signatures + language boost + description match
-            from ...ai.skills_kb import SKILLS, file_signature_hits
-
+            # Tech evidence: primary language + topics + description match
             tech_hits: dict[str, float] = {}
-            for sd in SKILLS:
-                hits = file_signature_hits(sd.name, paths)
-                if hits:
-                    tech_hits[sd.name] = round(min(1.0, 0.85 + 0.08 * min(3, len(hits))), 2)
-            lang_boost = {
-                "Python": {"Python"},
-                "Java": {"Java"},
-                "JavaScript": {"JavaScript", "Node.js"},
-                "TypeScript": {"TypeScript", "React", "Next.js", "Redux"},
-                "Go": {"Go"},
-                "C++": {"C++"},
-                "C": {"C"},
-                "Ruby": {"Ruby"},
-                "PHP": {"PHP"},
-                "Rust": {"Rust"},
-            }
-            for lang, techs in lang_boost.items():
-                if r.get("language") == lang:
-                    for t in techs:
-                        tech_hits[t] = max(tech_hits.get(t, 0.0), 0.35)
+            for tech in lang_boost.get(r.get("language") or "", ()):
+                tech_hits[tech] = max(tech_hits.get(tech, 0.0), 0.35)
             desc = (r.get("description") or "").lower()
             for sd in SKILLS:
                 if sd.name in tech_hits:
                     continue
                 if any(p.lower() in desc for p in sd.resume_patterns):
                     tech_hits[sd.name] = max(tech_hits.get(sd.name, 0.0), 0.25)
-
-            commits_count = 0
-            try:
-                # Empty repos (no commits) return 409 on /commits — skip, don't fail
-                commits = self._get_list(f"/repos/{full}/commits", max_pages=1)
-                commits_count = len(commits) if isinstance(commits, list) else 0
-            except ProfileCollectError:
-                pass
-            total_commits += commits_count
-            contributors = 0
-            try:
-                contribs = self._get_list(f"/repos/{full}/contributors", max_pages=1)
-                contributors = len(contribs) if isinstance(contribs, list) else 0
-            except ProfileCollectError:
-                pass
-            open_prs = 0
-            try:
-                prs = self._get(f"/repos/{full}/pulls", {"state": "open", "per_page": 1})
-                if isinstance(prs, list):
-                    open_prs = len(prs)
-            except ProfileCollectError:
-                pass
-
-            if ci:
-                repos_with_ci += 1
-            if docker:
-                repos_with_docker += 1
-            if readme_ok:
-                repos_with_readme += 1
-                readme_sum += readme_q
-            total_forks += r.get("forks_count", 0) or 0
-            total_stars += r.get("stargazers_count", 0) or 0
+                elif any(t.lower() in (" " + sd.name.lower()) or (sd.name.lower() in (t or "").lower()) for t in r.get("topics", [])):
+                    tech_hits[sd.name] = max(tech_hits.get(sd.name, 0.0), 0.25)
 
             repo_detail.append({
                 "name": r.get("name"),
-                "full_name": full,
+                "full_name": r.get("full_name"),
                 "description": r.get("description"),
                 "html_url": r.get("html_url"),
-                "homepage": r.get("homepage"),
-                "stars": r.get("stargazers_count", 0) or 0,
-                "forks": r.get("forks_count", 0) or 0,
-                "watchers": r.get("watchers_count", 0) or 0,
-                "open_issues": r.get("open_issues_count", 0) or 0,
+                "homepage": None,
+                "stars": stars,
+                "forks": forks,
+                "watchers": 0,
+                "open_issues": 0,
                 "language": r.get("language"),
                 "languages": languages,
-                "license_name": (r.get("license") or {}).get("spdx_id") or (r.get("license") or {}).get("name"),
+                "license_name": None,
                 "topics": r.get("topics", []) or [],
-                "created_at": r.get("created_at"),
+                "created_at": None,
                 "pushed_at": r.get("pushed_at"),
                 "has_readme": readme_ok,
                 "readme_quality": round(readme_q, 2),
-                "has_ci": ci,
-                "has_dockerfile": docker,
-                "commits_count": commits_count,
-                "contributors_count": contributors,
-                "open_prs": open_prs,
-                "is_fork": bool(r.get("fork")),
+                "has_ci": False,
+                "has_dockerfile": False,
+                "commits_count": 0,
+                "contributors_count": 0,
+                "open_prs": 0,
+                "is_fork": False,
                 "tech_hits": tech_hits,
             })
 
-        total_language_bytes = sum(language_totals.values()) or 1
-        language_usage = {lang: round(bytes_count / total_language_bytes, 3) for lang, bytes_count in sorted(language_totals.items(), key=lambda kv: -kv[1])}
+        total_lang = sum(language_count.values()) or 1
+        language_usage = {
+            lang: round(count / total_lang, 3)
+            for lang, count in sorted(language_count.items(), key=lambda kv: -kv[1])
+        }
 
         repo_count = len(repo_detail)
         return {
-            "_source": "github-api",
-            "username": handle,
-            "avatar_url": user.get("avatar_url"),
-            "public_repos": user.get("public_repos", repo_count),
-            "followers": user.get("followers", 0),
-            "following": user.get("following", 0),
-            "account_created_at": user.get("created_at"),
-            "bio": user.get("bio"),
-            "location": user.get("location"),
+            "_source": "github-html",
+            "username": profile.get("login") or handle,
+            "name": profile.get("name"),
+            "avatar_url": profile.get("avatar_url"),
+            "public_repos": profile.get("public_repos", repo_count),
+            "followers": profile.get("followers", 0),
+            "following": profile.get("following", 0),
+            "bio": profile.get("bio"),
+            "location": profile.get("location"),
             "total_stars": total_stars,
             "total_forks": total_forks,
-            "total_commits_fetched": total_commits,
-            "repos_with_ci": repos_with_ci,
-            "repos_with_docker": repos_with_docker,
+            "total_commits_fetched": profile.get("total_contributions", 0),
+            "repos_with_ci": 0,
+            "repos_with_docker": 0,
             "repos_with_readme": repos_with_readme,
             "avg_readme_quality": round(readme_sum / repo_count, 2) if repo_count else 0.0,
             "language_usage": language_usage,
             "repos": repo_detail,
-            "_rate_limit_hint": "Unauthenticated GitHub API (60 req/hr) — set GITHUB_TOKEN in backend/.env for 5,000 req/hr.",
+            "_rate_limit_hint": "GitHub HTML scraper (no token, no REST quota). "
+            "Per-repo commits/contributors/CI/Dockerfile/file-trees are not exposed "
+            "on the public pages; README quality covers the top few repos. "
+            "Results cached for 1 hour.",
         }
 
     # ------------------------------------------------------------------ #
@@ -306,7 +492,7 @@ class GitHubIntegration(SimulatedPlatformMixin):
         resume: ParsedResume | None,
         handle: str = "demo",
     ) -> dict:
-        """Simulated GitHub profile with the exact shape the real API returns."""
+        """Simulated GitHub profile with the exact shape the real scraper returns."""
         skills = resume.all_skill_names() if resume else []
         projects = [p for p in ((resume.projects or []) if resume else []) if p.name][:3]
 
@@ -319,7 +505,6 @@ class GitHubIntegration(SimulatedPlatformMixin):
         repos: list[dict] = []
         n = rng.randint(4, 9)
         used_names = set()
-        # repo names aligned with resume projects (for a consistent demo story)
         aligned = 0
         for p in projects:
             base = slug(p.name) or f"project-{aligned + 1}"
@@ -355,7 +540,6 @@ class GitHubIntegration(SimulatedPlatformMixin):
                 "tech_hits": tech_hits_for(repo_skills),
             })
             aligned += 1
-        # filler repos
         filler = ["portfolio-site", "algo-solutions", "notes-api", "devops-lab", "cli-utils", "ml-experiments", "system-design"]
         for i in range(n - aligned):
             name = filler[i % len(filler)]
@@ -419,21 +603,16 @@ class GitHubIntegration(SimulatedPlatformMixin):
     def validate(self, handle: str) -> tuple[bool, str]:
         """Cheap existence check used by the connect UI."""
         try:
-            user = self._get(f"/users/{handle.strip().lstrip('@')}")
-            return isinstance(user, dict), "ok"
+            html = self._get_html(self._profile_url(extract_username(handle))).text
+            return _parse_profile_exists(html), "ok"
         except ProfileCollectError as e:
             return False, str(e)
 
 
+def _parse_profile_exists(html: str) -> bool:
+    return bool(html and ('class="vcard-details"' in html or 'class="vcard-names"' in html))
+
+
 def is_github_rate_limited() -> bool:
-    try:
-        with httpx.Client(timeout=10) as client:
-            resp = client.get(
-                f"{API}/rate_limit",
-                headers={"Accept": "application/vnd.github+json", "User-Agent": "100xResume"},
-            )
-            data = resp.json()
-            remaining = data.get("resources", {}).get("core", {}).get("remaining", 0)
-            return int(remaining) < 5
-    except Exception:
-        return False
+    """No longer applicable — the HTML scraper has no token rate limit."""
+    return False

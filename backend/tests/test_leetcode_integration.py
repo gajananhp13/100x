@@ -231,8 +231,8 @@ def test_cache_short_circuits_network():
     second = integration.collect("jdoe")
 
     assert first == second
-    # 5 parallel queries for the first call, 0 for the cached second call
-    assert len(requests_log) == 5
+    # 6 parallel queries for the first call (matched, contest, contest_history, recent, skills, calendar), 0 for the cached second call
+    assert len(requests_log) == 6
     assert integration.collect("jdoe") == first
 
 

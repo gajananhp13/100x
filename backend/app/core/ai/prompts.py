@@ -17,6 +17,8 @@ Extract structured data from the resume text exactly as provided. Rules:
   open_source, coding, other. Set platform when identifiable (Devpost, Kaggle,
   GitHub, LeetCode, ...).
 - experience.technologies: technologies mentioned in that role.
+- experience.is_current: set to true if the duration includes "present" or
+  "current" (indicating the role is ongoing). Otherwise false.
 - Return JSON only, matching the schema provided in the user message."""
 
 SUMMARY_SYSTEM = """You are an AI recruiting analyst at a candidate verification platform.
@@ -77,6 +79,7 @@ PARSE_JSON_SCHEMA = {
                     "company": {"type": ["string", "null"]},
                     "position": {"type": ["string", "null"]},
                     "duration": {"type": ["string", "null"]},
+                    "is_current": {"type": "boolean"},
                     "responsibilities": {"type": "array", "items": {"type": "string"}},
                     "technologies": {"type": "array", "items": {"type": "string"}},
                 },

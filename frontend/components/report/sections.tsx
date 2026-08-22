@@ -99,9 +99,22 @@ export function OverviewSection({ a }: { a: AnalysisBundle }) {
 /* ---------------------------------------------------------------- */
 export function ResumeSummarySection({ a }: { a: AnalysisBundle }) {
   const p = a.resume.personal;
-  const expBrief = a.resume.experience
-    .map((e) => `${e.position} @ ${e.company}`)
-    .join("; ") || "no experience listed";
+  const experiences = a.resume.experience;
+  const currentExp = experiences.find((e) => e.is_current);
+  const pastExps = experiences.filter((e) => !e.is_current);
+
+  const formatExp = (e: { position?: string | null; company?: string | null }) => {
+    const pos = e.position || "Unknown Role";
+    const comp = e.company;
+    return comp ? `${pos} @ ${comp}` : pos;
+  };
+
+  const currentBrief = currentExp ? formatExp(currentExp) : null;
+  const pastBrief = pastExps.map(formatExp).join("; ");
+  const expSummary = currentBrief
+    ? `Currently: ${currentBrief}${pastBrief ? `. Past: ${pastBrief}` : ""}`
+    : pastBrief || "no experience listed";
+
   const projectBrief = a.resume.projects.map((pr) => pr.name).filter(Boolean).join("; ") || "no projects listed";
   const achievementCount = a.resume.achievements.length;
 
@@ -110,7 +123,7 @@ export function ResumeSummarySection({ a }: { a: AnalysisBundle }) {
       <SectionHeader index="2" title="Resume Summary" subtitle="A plain-language overview of the parsed resume." />
       <Card>
         <p className="text-sm leading-relaxed text-ink-2">
-          {p.name || "The candidate"} is a {a.resume.experience.length}-position professional ({expBrief}).
+          {p.name || "The candidate"} is a {experiences.length}-position professional ({expSummary}).
           Skills span {Object.values(a.resume.skills).flat().length} technologies. Portfolio projects:{" "}
           {projectBrief}. The resume lists {achievementCount} achievement(s) and{" "}
           {a.resume.education.length} education record(s).
@@ -283,7 +296,7 @@ export function CodingSection({ c }: { c: CodingAnalysis | null }) {
     return (
       <section>
         <SectionHeader index="6" title="Coding Platform Analysis" />
-        <Card><p className="text-sm text-muted">No coding platform profiles were connected (LeetCode, Codeforces, CodeChef, GeeksforGeeks, HackerRank, Kaggle).</p></Card>
+        <Card><p className="text-sm text-muted">No coding platform profiles were connected (LeetCode, Codeforces, CodeChef, GeeksforGeeks, HackerRank).</p></Card>
       </section>
     );
   }
@@ -310,6 +323,8 @@ export function CodingSection({ c }: { c: CodingAnalysis | null }) {
           {c.platforms.map((p) =>
             p.platform === "leetcode" ? (
               <LeetCodeCard key={p.platform} p={p} />
+            ) : p.platform === "hackerrank" ? (
+              <HackerRankCard key={p.platform} p={p} />
             ) : (
               <Card key={p.platform} className="flex flex-col">
                 <div className="flex items-center justify-between">
@@ -332,11 +347,12 @@ export function CodingSection({ c }: { c: CodingAnalysis | null }) {
 /* 6a. LeetCode Detailed Card                                       */
 /* ---------------------------------------------------------------- */
 function LeetCodeCard({ p }: { p: CodingPlatformProfile }) {
-  const s = p.stats as Record<string, number>;
-  const skills = (p.stats as Record<string, unknown>).skills as
+  const s = p.stats as Record<string, unknown>;
+  const skills = s.skills as
     | { fundamental?: { total: number; topics: Array<{ name: string; solved: number }> }; intermediate?: { total: number; topics: Array<{ name: string; solved: number }> }; advanced?: { total: number; topics: Array<{ name: string; solved: number }> } }
     | undefined;
-  const recent = ((p.stats as Record<string, unknown>).recent_submissions as Array<{ title: string; status: string }>) || [];
+  const recent = (s.recent_submissions as Array<{ title: string; status: string }>) || [];
+  const contestHistory = (s.contest_history as Array<{ title: string; rating: number; ranking: number; total_participants: number; start_time: number }>) || [];
 
   return (
     <Card className="flex flex-col sm:col-span-2">
@@ -349,33 +365,89 @@ function LeetCodeCard({ p }: { p: CodingPlatformProfile }) {
 
       {/* Top-level stats */}
       <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
-        <Stat label="Solved" value={s.total_solved || 0} sub={`${s.total_questions || 0} total`} />
-        <Stat label="Contest Rating" value={s.contest_rating || 0} accent="text-accent" />
-        <Stat label="Streak" value={`${s.streak_days || 0}d`} sub={s.total_active_days ? `${s.total_active_days} active days` : undefined} />
-        <Stat label="Acceptance" value={`${s.acceptance_rate || 0}%`} />
+        <Stat label="Solved" value={Number(s.total_solved) || 0} sub={`${Number(s.total_questions) || 0} total`} />
+        <Stat label="Contest Rating" value={Number(s.contest_rating) || 0} accent="text-accent" />
+        <Stat label="Streak" value={`${Number(s.streak_days) || 0}d`} sub={Number(s.total_active_days) ? `${s.total_active_days} active days` : undefined} />
+        <Stat label="Acceptance" value={`${Number(s.acceptance_rate) || 0}%`} />
       </div>
 
-      {/* Difficulty breakdown */}
-      {(s.easy || s.medium || s.hard) > 0 && (
+      {/* Difficulty breakdown — circular ring */}
+      {(Number(s.easy) || Number(s.medium) || Number(s.hard)) > 0 && (
         <div className="mt-3">
           <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted">Difficulty Breakdown</div>
-          <div className="space-y-1.5">
-            {[
-              { label: "Easy", count: s.easy || 0, tone: "emerald" as const },
-              { label: "Medium", count: s.medium || 0, tone: "amber" as const },
-              { label: "Hard", count: s.hard || 0, tone: "rose" as const },
-            ].map(({ label, count, tone }) => {
-              const total = (s.easy || 0) + (s.medium || 0) + (s.hard || 0) || 1;
-              return (
-                <div key={label}>
-                  <div className="flex justify-between text-xs">
-                    <span className="text-ink-2">{label}</span>
-                    <span className="text-muted">{count}</span>
-                  </div>
-                  <ProgressBar value={(count / total) * 100} tone={tone} className="mt-0.5" />
+          <div className="flex items-center gap-6">
+            {/* Ring chart */}
+            <DifficultyRing easy={Number(s.easy) || 0} medium={Number(s.medium) || 0} hard={Number(s.hard) || 0} total={Number(s.total_questions) || 0} />
+            {/* Legend */}
+            <div className="flex flex-col gap-2">
+              {[
+                { label: "Easy", count: Number(s.easy) || 0, total: Number(s.total_easy) || 0, color: "#0ea371" },
+                { label: "Med.", count: Number(s.medium) || 0, total: Number(s.total_medium) || 0, color: "#d97706" },
+                { label: "Hard", count: Number(s.hard) || 0, total: Number(s.total_hard) || 0, color: "#e5484d" },
+              ].map((d) => (
+                <div key={d.label} className="flex items-center gap-2">
+                  <span className="text-sm font-bold" style={{ color: d.color }}>{d.count}</span>
+                  <span className="text-xs text-muted">/ {d.total || "—"}</span>
+                  <span className="text-xs font-medium text-ink-2">{d.label}</span>
                 </div>
-              );
-            })}
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Contest section */}
+      {(Number(s.contest_rating) > 0 || Number(s.attended_contests) > 0) && (
+        <div className="mt-4">
+          <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted">Contest</div>
+          <div className="rounded-xl border border-line bg-slate-soft/40 p-4">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              {/* Rating + level */}
+              <div className="flex items-center gap-3">
+                <div>
+                  <div className="text-[11px] font-medium text-muted">Contest Rating</div>
+                  <div className="text-2xl font-bold text-ink">{Number(s.contest_rating) || 0}</div>
+                </div>
+                {typeof s.contest_level === "string" && s.contest_level && (
+                  <span className="inline-flex items-center gap-1 rounded-full border border-accent/30 bg-accent-soft px-2.5 py-1 text-xs font-semibold text-accent">
+                    <svg className="h-3.5 w-3.5" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                    </svg>
+                    {String(s.contest_level)}
+                  </span>
+                )}
+              </div>
+              {/* Ranking + attended */}
+              <div className="flex gap-4">
+                {Number(s.global_ranking) > 0 && (
+                  <div className="text-right">
+                    <div className="text-[11px] font-medium text-muted">Global Ranking</div>
+                    <div className="text-sm font-bold text-ink">
+                      {Number(s.global_ranking).toLocaleString()}
+                      {Number(s.total_participants) > 0 && (
+                        <span className="text-xs font-normal text-muted"> / {Number(s.total_participants).toLocaleString()}</span>
+                      )}
+                    </div>
+                    {Number(s.top_percentage) > 0 && (
+                      <div className="text-[10px] text-accent">Top {Number(s.top_percentage)}%</div>
+                    )}
+                  </div>
+                )}
+                {Number(s.attended_contests) > 0 && (
+                  <div className="text-right">
+                    <div className="text-[11px] font-medium text-muted">Attended</div>
+                    <div className="text-sm font-bold text-ink">{Number(s.attended_contests)}</div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Rating history mini chart */}
+            {contestHistory.length > 1 && (
+              <div className="mt-3">
+                <ContestRatingChart history={contestHistory} />
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -429,6 +501,140 @@ function LeetCodeCard({ p }: { p: CodingPlatformProfile }) {
   );
 }
 
+/* ---------------------------------------------------------------- */
+/* Difficulty Ring — multi-segment donut chart                      */
+/* ---------------------------------------------------------------- */
+function DifficultyRing({ easy, medium, hard, total }: { easy: number; medium: number; hard: number; total: number }) {
+  const size = 140;
+  const stroke = 12;
+  const r = (size - stroke) / 2;
+  const C = 2 * Math.PI * r;
+  const solved = easy + medium + hard;
+  const displayTotal = total || solved;
+
+  const segments = [
+    { count: easy, color: "#0ea371" },
+    { count: medium, color: "#d97706" },
+    { count: hard, color: "#e5484d" },
+  ];
+
+  let accumulated = 0;
+
+  return (
+    <div className="relative inline-flex items-center justify-center shrink-0" style={{ width: size, height: size }}>
+      <svg width={size} height={size} className="-rotate-90">
+        {/* Background track */}
+        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="#e6e8ef" strokeWidth={stroke} />
+        {/* Colored segments */}
+        {segments.map(({ count, color }) => {
+          if (count <= 0) return null;
+          const fraction = solved > 0 ? count / solved : 0;
+          const segLen = fraction * C;
+          const offset = C - accumulated;
+          accumulated += segLen;
+          return (
+            <circle
+              key={color}
+              cx={size / 2}
+              cy={size / 2}
+              r={r}
+              fill="none"
+              stroke={color}
+              strokeWidth={stroke}
+              strokeLinecap="round"
+              strokeDasharray={`${segLen} ${C - segLen}`}
+              strokeDashoffset={offset}
+              style={{ transition: "all 0.7s ease" }}
+            />
+          );
+        })}
+      </svg>
+      {/* Center label */}
+      <div className="absolute inset-0 flex flex-col items-center justify-center">
+        <div className="text-xl font-bold text-ink">
+          {solved}<span className="text-sm font-normal text-muted">/{displayTotal}</span>
+        </div>
+        <div className="flex items-center gap-1 text-[10px] text-emerald">
+          <svg className="h-3 w-3" fill="currentColor" viewBox="0 0 20 20">
+            <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+          </svg>
+          Solved
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------- */
+/* Contest Rating History — SVG mini line chart                     */
+/* ---------------------------------------------------------------- */
+function ContestRatingChart({ history }: { history: Array<{ rating: number; start_time: number }> }) {
+  if (history.length < 2) return null;
+
+  const sorted = [...history].sort((a, b) => a.start_time - b.start_time);
+  const ratings = sorted.map((h) => h.rating);
+  const minR = Math.min(...ratings);
+  const maxR = Math.max(...ratings);
+  const range = maxR - minR || 1;
+  const pad = 8;
+
+  const w = 480;
+  const h = 80;
+  const chartW = w - pad * 2;
+  const chartH = h - pad * 2;
+
+  const points = sorted.map((entry, i) => {
+    const x = pad + (i / (sorted.length - 1)) * chartW;
+    const y = pad + chartH - ((entry.rating - minR) / range) * chartH;
+    return `${x},${y}`;
+  });
+
+  const lastRating = ratings[ratings.length - 1];
+  const firstYear = new Date(sorted[0].start_time * 1000).getFullYear();
+  const lastYear = new Date(sorted[sorted.length - 1].start_time * 1000).getFullYear();
+
+  return (
+    <div className="relative">
+      <svg viewBox={`0 0 ${w} ${h}`} className="w-full" preserveAspectRatio="none">
+        {/* Grid lines */}
+        {[0, 0.25, 0.5, 0.75, 1].map((frac) => (
+          <line
+            key={frac}
+            x1={pad}
+            y1={pad + chartH * (1 - frac)}
+            x2={w - pad}
+            y2={pad + chartH * (1 - frac)}
+            stroke="#e6e8ef"
+            strokeWidth={0.5}
+          />
+        ))}
+        {/* Line */}
+        <polyline
+          points={points.join(" ")}
+          fill="none"
+          stroke="#f59e0b"
+          strokeWidth={2}
+          strokeLinejoin="round"
+          strokeLinecap="round"
+        />
+        {/* End dot */}
+        {points.length > 0 && (() => {
+          const last = points[points.length - 1].split(",");
+          return (
+            <circle cx={last[0]} cy={last[1]} r={4} fill="#f59e0b" stroke="white" strokeWidth={2} />
+          );
+        })()}
+      </svg>
+      {/* Labels */}
+      <div className="flex justify-between px-1 text-[10px] text-muted">
+        <span>{firstYear}</span>
+        <span className="font-semibold text-ink">{lastRating}</span>
+        <span>{lastYear}</span>
+      </div>
+    </div>
+  );
+}
+
 function ScoreRingOverlay({ value, label }: { value: number; label: string }) {
   return (
     <div className="relative inline-flex items-center justify-center">
@@ -446,6 +652,118 @@ function ScoreRingOverlay({ value, label }: { value: number; label: string }) {
         <div className="text-[10px] font-medium uppercase tracking-wide text-muted">{label}</div>
       </div>
     </div>
+  );
+}
+
+/* ---------------------------------------------------------------- */
+/* 6b. HackerRank Detailed Card                                     */
+/* ---------------------------------------------------------------- */
+interface HackerRankBadge {
+  name: string;
+  stars: number;
+  level: number;
+  icon: string;
+  solved: number;
+}
+
+function HackerRankCard({ p }: { p: CodingPlatformProfile }) {
+  const s = p.stats as Record<string, unknown>;
+  const badges = (s.badges as HackerRankBadge[]) || [];
+  const totalBadges = Number(s.total_badges) || badges.length;
+  const stars = Number(s.stars) || 0;
+  const level = Number(s.level) || 0;
+  const problemsSolved = Number(s.problems_solved) || 0;
+  const practiceScore = Number(s.practice_score) || 0;
+  const ranking = Number(s.ranking) || 0;
+  const contestCount = Number(s.contest_count) || 0;
+  const contestRating = Number(s.contest_rating) || 0;
+
+  return (
+    <Card className="flex flex-col sm:col-span-2">
+      <div className="flex items-center justify-between">
+        <span className="text-sm font-semibold text-ink">{p.platform_label}</span>
+        <a href={p.url} target="_blank" rel="noreferrer" className="text-xs text-accent hover:underline">
+          @{p.handle}
+        </a>
+      </div>
+
+      {/* Top-level stats */}
+      <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <Stat label="Badges" value={totalBadges} sub={stars > 0 ? `${stars}★ profile` : undefined} />
+        <Stat label="Problems Solved" value={problemsSolved} />
+        <Stat label="Practice Score" value={practiceScore} accent="text-accent" />
+        <Stat label="Best Rank" value={ranking || "—"} sub={contestCount > 0 ? `${contestCount} contest${contestCount === 1 ? "" : "s"}` : undefined} />
+      </div>
+
+      {/* Contest rating */}
+      {contestRating > 0 && (
+        <div className="mt-3">
+          <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted">Contest Rating</div>
+          <div className="rounded-lg border border-line bg-slate-soft/40 p-2">
+            <span className="text-sm font-semibold text-ink">{contestRating}</span>
+          </div>
+        </div>
+      )}
+
+      {/* Badges with star ratings */}
+      {badges.length > 0 && (
+        <div className="mt-3">
+          <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted">
+            Badges ({badges.length})
+          </div>
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+            {badges.map((badge, i) => (
+              <div
+                key={`${badge.name}-${i}`}
+                className="rounded-lg border border-line bg-slate-soft/40 p-2.5"
+              >
+                <div className="flex items-center gap-2">
+                  {badge.icon && (
+                    <img
+                      src={badge.icon}
+                      alt={badge.name}
+                      className="h-6 w-6 shrink-0 rounded-sm object-contain"
+                      onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+                    />
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-xs font-semibold text-ink">{badge.name}</div>
+                    <div className="mt-0.5 flex items-center gap-0.5">
+                      {Array.from({ length: 3 }, (_, si) => (
+                        <svg
+                          key={si}
+                          className={`h-3 w-3 ${si < badge.stars ? "text-amber" : "text-line"}`}
+                          fill="currentColor"
+                          viewBox="0 0 20 20"
+                        >
+                          <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
+                        </svg>
+                      ))}
+                      <span className="ml-1 text-[10px] text-muted">{badge.stars}★</span>
+                    </div>
+                  </div>
+                </div>
+                {badge.solved > 0 && (
+                  <div className="mt-1 text-[10px] text-muted">{badge.solved} solved</div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Active tracks */}
+      {Array.isArray(s.active_tracks) && s.active_tracks.length > 0 && (
+        <div className="mt-3">
+          <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">Active Tracks</div>
+          <div className="flex flex-wrap gap-1">
+            {s.active_tracks.map((track: string) => (
+              <Chip key={track}>{track}</Chip>
+            ))}
+          </div>
+        </div>
+      )}
+    </Card>
   );
 }
 

@@ -12,6 +12,10 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-4o-mini"
     github_token: str | None = None
     report_storage_dir: str = "data/reports"
+    linkedin_scrape_enabled: bool = False
+    linkedin_session_path: str | None = None
+    linkedin_email: str | None = None
+    linkedin_password: str | None = None
     allowed_origins: list[str] = ["http://localhost:3000", "http://127.0.0.1:3000"]
     max_upload_bytes: int = 10 * 1024 * 1024  # 10 MB
     document_parse_timeout_seconds: float = 30.0

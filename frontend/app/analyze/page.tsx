@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { api, runAnalysis } from "@/lib/api";
 import { PLATFORM_CATEGORIES, platformById } from "@/lib/platforms";
@@ -14,7 +14,7 @@ type Step = 0 | 1 | 2;
 const STAGES_META: Record<string, { label: string; desc: string }> = {
   init: { label: "Starting pipeline", desc: "Preparing the verification run" },
   github: { label: "GitHub analysis", desc: "Repositories, commits, CI/CD, documentation" },
-  coding: { label: "Coding platforms", desc: "LeetCode, Codeforces, CodeChef, Kaggle, more" },
+  coding: { label: "Coding platforms", desc: "LeetCode, Codeforces, CodeChef, more" },
   skills: { label: "Skill verification", desc: "Matching technologies against public code" },
   projects: { label: "Project verification", desc: "Matching resume projects to repositories" },
   achievements: { label: "Achievement verification", desc: "Hackathons, certifications, contributions" },
@@ -25,7 +25,6 @@ const STAGES_META: Record<string, { label: string; desc: string }> = {
 
 export default function AnalyzePage() {
   const router = useRouter();
-  const params = useSearchParams();
   const [step, setStep] = useState<Step>(0);
   const [resume, setResume] = useState<ParsedResume | null>(null);
   const [profiles, setProfiles] = useState<ConnectedProfile[]>([]);
@@ -61,12 +60,12 @@ export default function AnalyzePage() {
 
   // ?demo=1 → load demo candidate and run straight to the report
   useEffect(() => {
-    if (params.get("demo") === "1" && !startedDemo.current) {
+    if (window.location.search.includes("demo=1") && !startedDemo.current) {
       startedDemo.current = true;
       void loadDemo().then(() => runNow());
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [params]);
+  }, []);
 
   const runNow = useCallback(async () => {
     if (!resume) return;
@@ -183,12 +182,13 @@ export default function AnalyzePage() {
         <Link href="/" className="flex items-center gap-2 text-sm font-semibold text-ink">
           <Logo /> 100x Resume
         </Link>
-        <div className="flex items-center gap-3">
-          <Button variant="ghost" size="sm" onClick={loadDemo} disabled={busy || running}>
-            Load demo candidate
-          </Button>
-          <Link href="/" className="text-sm text-muted hover:text-ink">Cancel</Link>
-        </div>
+          <div className="flex items-center gap-3">
+            <Link href="/analyze" className="text-sm text-muted hover:text-ink">HR ranking</Link>
+            <Button variant="ghost" size="sm" onClick={loadDemo} disabled={busy || running}>
+              Load demo candidate
+            </Button>
+            <Link href="/" className="text-sm text-muted hover:text-ink">Cancel</Link>
+          </div>
       </div>
 
       <StepIndicator step={step} running={running} />

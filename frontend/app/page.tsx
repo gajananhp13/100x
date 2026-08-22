@@ -77,6 +77,7 @@ export default function LandingPage() {
             <a href="#how" className="hover:text-ink">How it works</a>
             <a href="#platforms" className="hover:text-ink">Platforms</a>
             <a href="#report" className="hover:text-ink">The report</a>
+            <Link href="/hr" className="hover:text-ink">HR ranking</Link>
           </nav>
           <Link
             href="/analyze"

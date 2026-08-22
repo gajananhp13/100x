@@ -1,4 +1,11 @@
-import type { ParsedResume, ConnectedProfile, PlatformsResponse } from "./types";
+import type {
+  ParsedResume,
+  ConnectedProfile,
+  PlatformsResponse,
+  ResumeBatchResult,
+  ResumeBatchConnectResult,
+  ResumeBatchCandidate,
+} from "./types";
 
 async function json<T>(promise: Promise<Response>): Promise<T> {
   const res = await promise;
@@ -83,6 +90,41 @@ export const api = {
     json<import("./types").CandidateReport>(fetch(`/api/report/${reportId}`)),
 
   pdfUrl: (reportId: string) => `/api/report/${reportId}/pdf`,
+
+  /** Upload + parse many resume files at once (HR batch). */
+  uploadResumeBatch: (files: File[]) => {
+    const fd = new FormData();
+    for (const f of files) fd.append("files", f);
+    return json<ResumeBatchResult>(
+      fetch("/api/resume/batch", { method: "POST", body: fd }),
+    );
+  },
+
+  /** Auto-connect every social/developer profile detected across a batch of resumes. */
+  connectBatchProfiles: (
+    candidates: Array<Pick<ResumeBatchCandidate, "index" | "filename" | "resume">>,
+  ) =>
+    json<ResumeBatchConnectResult>(
+      fetch("/api/integrations/batch/connect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ candidates }),
+      }),
+    ),
+
+  /** Run full validation + scoring across a batch, returning a ranked leaderboard. */
+  analyzeBatch: (
+    candidates: Array<
+      Pick<ResumeBatchCandidate, "index" | "filename" | "resume" | "profiles">
+    >,
+  ) =>
+    json<ResumeBatchResult>(
+      fetch("/api/analysis/batch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ candidates }),
+      }),
+    ),
 };
 
 /**

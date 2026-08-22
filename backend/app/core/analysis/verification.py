@@ -41,9 +41,15 @@ def _parse_dt(value: str | None) -> datetime | None:
 # belong in the Technical Verification section. Version control, IDEs and
 # project tools are process aids, not verifiable technical skills; testing
 # frameworks and AI services (LLMs, wrappers) are excluded for the same reason.
+# DevOps and Cloud tooling (Docker, Kubernetes, GitLab CI, Grafana, AWS, Azure,
+# GCP, …) is excluded because those services/tools leave little or no scrapable
+# code evidence in public repositories — showing them as "0% No Public Evidence"
+# is misleading for the candidate.
 # Technical libraries/frameworks (PyTorch, TensorFlow, Spring Boot, FastAPI, …)
 # are kept because they leave real code evidence.
-_EXCLUDED_VERIFICATION_CATEGORIES: frozenset[str] = frozenset({"testing", "tools"})
+_EXCLUDED_VERIFICATION_CATEGORIES: frozenset[str] = frozenset(
+    {"testing", "tools", "devops", "cloud"}
+)
 _EXCLUDED_VERIFICATION_TECHS: frozenset[str] = frozenset(
     {"LLM", "OpenAI", "LangChain", "Hugging Face", "MLOps"}
 )
@@ -297,12 +303,7 @@ def verify_achievements(resume: ParsedResume, profiles: list[ConnectedProfile], 
                 evidence.append("No coding platform connected; this claim has no public verification source.")
 
         elif a.type == "publication":
-            md = plat("medium")
-            if md:
-                n = int(md.data.get("articles", 0) or 0)
-                consider("pub", n > 0, min(0.8, 0.4 + n * 0.05), f"Medium profile lists {n} article(s).")
-            else:
-                evidence.append("Medium not connected; no public publication record found.")
+            evidence.append("No public publication platform is connected; this claim has no public verification source.")
 
         elif a.type == "open_source":
             if github:

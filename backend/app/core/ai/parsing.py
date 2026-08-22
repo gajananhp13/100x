@@ -140,9 +140,17 @@ def _extract_personal(lines: list[str], sections: dict[str, list[int]]) -> Perso
         if not is_known_platform and not pd.portfolio:
             pd.portfolio = url
     # location guess: look for line like "City, State" or "City, Country"
+    field_words = (
+        "skills", "technologies", "tech stack", "technical skills", "summary",
+        "profile", "education", "experience", "projects", "certifications",
+        "achievements", "interests", "objective", "links",
+    )
     for line in window:
-        if "," in line and len(line) < 45 and not pd.location and not any(k in line.lower() for k in
-                ("http", "@", "correctiv", "|", "phone", "linkedin", "github", "email")):
+        low = line.lower().strip()
+        if not pd.location and "," in line and len(line) < 45 and not any(k in low for k in
+                ("http", "@", "correctiv", "|", "phone", "linkedin", "github", "email", "skills")):
+            if low.startswith(field_words):
+                continue
             candidate = line.strip()
             if 3 < len(candidate) < 40 and not re.match(r"^[A-Z]{2,}$", candidate.strip().replace(",", "")):
                 pd.location = candidate
@@ -217,6 +225,45 @@ def _extract_education(lines: list[str], section_idx: list[int]) -> list[Educati
     return out
 
 
+def _split_position_company(line: str) -> tuple[str | None, str | None]:
+    """Extract position and company from a line like 'Position @ Company' or 'Position at Company'."""
+    # Pattern: "Position @ Company" or "Position (details) @ Company"
+    at_match = re.match(r"^(.+?)\s*@\s*(.+)$", line)
+    if at_match:
+        return at_match.group(1).strip(), at_match.group(2).strip()
+
+    # Pattern: "Position at Company" or "Position at a Company"
+    at_word_match = re.match(r"^(.+?)\s+\bat\b\s+(?:a\s+)?(.+)$", line, re.IGNORECASE)
+    if at_word_match:
+        return at_word_match.group(1).strip(), at_word_match.group(2).strip()
+
+    # Pattern: "Company — Position" or "Company - Position" (em-dash or hyphen separator)
+    dash_match = re.match(r"^(.+?)\s*[–—-]\s*(.+)$", line)
+    if dash_match:
+        left, right = dash_match.group(1).strip(), dash_match.group(2).strip()
+        left_lower = left.lower()
+        right_lower = right.lower()
+        left_has_pos = any(w in left_lower for w in ("developer", "engineer", "intern", "analyst", "sde",
+                                                      "manager", "consultant", "trainee", "architect", "lead",
+                                                      "specialist", "associate", "founder"))
+        right_has_pos = any(w in right_lower for w in ("developer", "engineer", "intern", "analyst", "sde",
+                                                        "manager", "consultant", "trainee", "architect", "lead",
+                                                        "specialist", "associate", "founder"))
+        if left_has_pos and not right_has_pos:
+            return left, right  # left=position, right=company
+        if right_has_pos and not left_has_pos:
+            return right, left  # right=position, left=company
+
+    return line, None
+
+
+def _detect_current(duration: str | None) -> bool:
+    """Return True if duration string indicates the role is current."""
+    if not duration:
+        return False
+    return "present" in duration.lower() or "current" in duration.lower()
+
+
 def _extract_experience(lines: list[str], section_idx: list[int]) -> list[Experience]:
     out: list[Experience] = []
     if not section_idx:
@@ -225,24 +272,42 @@ def _extract_experience(lines: list[str], section_idx: list[int]) -> list[Experi
     for i in section_idx:
         line = lines[i].strip()
         lowered = line.lower()
-        is_header_like = _is_header(line)
         has_company = any(k in lowered for k in COMPANY_KEYWORDS)
         has_date = bool(re.search(r"\b(19|20)\d{2}\b", line))
         has_position_word = any(w in lowered for w in ("developer", "engineer", "intern", "analyst", "sde",
                                                        "manager", "consultant", "trainee", "architect", "lead",
                                                        "specialist", "associate", "founder"))
-        # Start a new role when line looks like a role header (company or position and short).
-        if (has_company or has_position_word) and len(line) < 90 and (has_date or current is None):
+        has_at_separator = "@" in line
+        has_at_word = bool(re.search(r"\bat\b", lowered))
+
+        is_role_line = (has_company or has_position_word or has_at_separator or has_at_word) and len(line) < 120
+
+        if is_role_line and (has_date or current is None):
             if current and (current.company or current.position):
                 out.append(current)
             current = Experience()
-            current.company = line if has_company and not has_position_word else None
-            current.position = line if has_position_word else None
-            if current.company is None and current.position is None:
+
+            # Try to split position @ company / position at company
+            if has_at_separator or has_at_word:
+                pos, comp = _split_position_company(line)
+                current.position = pos
+                current.company = comp
+            elif has_company and not has_position_word:
+                current.company = line
+                current.position = None
+            elif has_position_word and not has_company:
                 current.position = line
+                current.company = None
+            else:
+                # Line has both position words and company keywords — try splitting
+                pos, comp = _split_position_company(line)
+                current.position = pos
+                current.company = comp
+
             dm = re.findall(r"\b(19|20)\d{2}\b", line)
             if dm:
                 current.duration = " – ".join(dm) if len(dm) > 1 else f"{dm[0]} – present"
+            current.is_current = _detect_current(current.duration)
             continue
         if current is not None:
             # split company|position style
@@ -250,6 +315,12 @@ def _extract_experience(lines: list[str], section_idx: list[int]) -> list[Experi
                 parts = [p.strip() for p in line.split("|")]
                 current.position, current.company = parts[0], parts[1]
                 continue
+            # If we have a position but no company, check if this line is just a company name
+            if current.position and not current.company and not has_position_word:
+                # Check if the line looks like a company (has company keywords or is short)
+                if has_company or (len(line) < 60 and not LINE_BULLET.match(line)):
+                    current.company = line.strip()
+                    continue
             if LINE_BULLET.match(line):
                 current.responsibilities.append(LINE_BULLET.sub("", line).strip())
             else:

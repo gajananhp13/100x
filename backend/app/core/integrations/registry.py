@@ -41,7 +41,7 @@ def build_integration(platform_id: str, force_mock: bool = False) -> PlatformInt
 def platform_categories() -> dict[str, list[PlatformDef]]:
     return {
         "Code Hosting": [p for p in PLATFORMS if p.id in ("github", "gitlab", "bitbucket")],
-        "Professional & Social": [p for p in PLATFORMS if p.id in ("linkedin", "portfolio", "twitter", "medium", "hashnode", "devto")],
-        "Coding & Competitions": [p for p in PLATFORMS if p.id in ("leetcode", "interviewbit", "codeforces", "codechef", "geeksforgeeks", "hackerrank", "kaggle", "stackoverflow")],
+        "Professional & Social": [p for p in PLATFORMS if p.id in ("linkedin", "portfolio")],
+        "Coding & Competitions": [p for p in PLATFORMS if p.id in ("leetcode", "interviewbit", "codeforces", "codechef", "geeksforgeeks", "hackerrank", "stackoverflow")],
         "Hackathons": [p for p in PLATFORMS if p.id == "devpost"],
     }

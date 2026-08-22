@@ -57,7 +57,28 @@ query matchedUser($username: String!) {
 
 CONTEST_RANKING_QUERY = """
 query contestRanking($username: String!) {
-  userContestRanking(username: $username) { rating }
+  userContestRanking(username: $username) {
+    attendedContestsCount
+    rating
+    globalRanking
+    totalParticipants
+    topPercentage
+  }
+}
+"""
+
+CONTEST_HISTORY_QUERY = """
+query contestHistory($username: String!) {
+  userContestRankingHistory(username: $username) {
+    attended
+    rating
+    ranking
+    totalParticipants
+    contest {
+      title
+      startTime
+    }
+  }
 }
 """
 
@@ -95,6 +116,33 @@ query userProfileCalendar($username: String!) {
 """
 
 MAX_TOPICS_PER_SECTION = 20
+
+
+# ---------------------------------------------------------------------- #
+# Contest level mapping
+# ---------------------------------------------------------------------- #
+
+def _contest_level(rating: float) -> str:
+    """Map contest rating to LeetCode contest level name."""
+    if rating >= 3500:
+        return "Legendary Grandmaster"
+    if rating >= 3200:
+        return "International Grandmaster"
+    if rating >= 3000:
+        return "Grandmaster"
+    if rating >= 2800:
+        return "International Master"
+    if rating >= 2500:
+        return "Master"
+    if rating >= 2200:
+        return "Candidate Master"
+    if rating >= 2000:
+        return "Expert"
+    if rating >= 1800:
+        return "Specialist"
+    if rating >= 1500:
+        return "Pupil"
+    return "Newbie"
 
 
 # ---------------------------------------------------------------------- #
@@ -218,6 +266,10 @@ class LeetCodeIntegration(SimulatedPlatformMixin):
                 except Exception:
                     contest_res = None
                 try:
+                    contest_history_res = self._post(client, CONTEST_HISTORY_QUERY, username)
+                except Exception:
+                    contest_history_res = None
+                try:
                     recent_res = self._post(client, RECENT_SUBMISSIONS_QUERY, username)
                 except Exception:
                     recent_res = None
@@ -261,6 +313,11 @@ class LeetCodeIntegration(SimulatedPlatformMixin):
 
         all_counts = (matched_data.get("data") or {}).get("allQuestionsCount") or []
         total_questions = max((int(c.get("count", 0) or 0) for c in all_counts), default=0)
+        # Per-difficulty totals for the ring chart
+        q_map = {str(c.get("difficulty", "")).title(): int(c.get("count", 0) or 0) for c in all_counts}
+        total_easy = q_map.get("Easy", 0)
+        total_medium = q_map.get("Medium", 0)
+        total_hard = q_map.get("Hard", 0)
 
         badges: list[dict] = []
         for b in user.get("badges") or []:
@@ -271,11 +328,43 @@ class LeetCodeIntegration(SimulatedPlatformMixin):
 
         # Contest rating (optional) ----------------------------------- #
         contest_rating: int | None = None
+        attended_contests = 0
+        global_ranking = 0
+        total_participants = 0
+        top_percentage = 0.0
+        contest_level = "Newbie"
         if contest_res is not None:
             try:
-                rating = ((contest_res.json().get("data") or {}).get("userContestRanking") or {}).get("rating")
-                if rating:
-                    contest_rating = int(rating)
+                cr = (contest_res.json().get("data") or {}).get("userContestRanking") or {}
+                rating_val = cr.get("rating")
+                if rating_val:
+                    contest_rating = int(rating_val)
+                    contest_level = _contest_level(contest_rating)
+                attended_contests = int(cr.get("attendedContestsCount") or 0)
+                global_ranking = int(cr.get("globalRanking") or 0)
+                total_participants = int(cr.get("totalParticipants") or 0)
+                top_percentage = float(cr.get("topPercentage") or 0)
+            except Exception:
+                pass
+
+        # Contest rating history (optional) ---------------------------- #
+        contest_history: list[dict] = []
+        if contest_history_res is not None:
+            try:
+                history_entries = (contest_history_res.json().get("data") or {}).get(
+                    "userContestRankingHistory"
+                ) or []
+                for entry in history_entries:
+                    if not isinstance(entry, dict) or not entry.get("attended"):
+                        continue
+                    contest_info = entry.get("contest") or {}
+                    contest_history.append({
+                        "title": contest_info.get("title") or "",
+                        "rating": int(entry.get("rating") or 0),
+                        "ranking": int(entry.get("ranking") or 0),
+                        "total_participants": int(entry.get("totalParticipants") or 0),
+                        "start_time": int(contest_info.get("startTime") or 0),
+                    })
             except Exception:
                 pass
 
@@ -333,8 +422,17 @@ class LeetCodeIntegration(SimulatedPlatformMixin):
             "medium": ac_map.get("Medium", 0),
             "hard": ac_map.get("Hard", 0),
             "total_questions": total_questions,
+            "total_easy": total_easy,
+            "total_medium": total_medium,
+            "total_hard": total_hard,
             "acceptance_rate": acceptance_rate,
             "contest_rating": contest_rating or 0,
+            "contest_level": contest_level,
+            "attended_contests": attended_contests,
+            "global_ranking": global_ranking,
+            "total_participants": total_participants,
+            "top_percentage": round(top_percentage, 2),
+            "contest_history": contest_history,
             "streak_days": streak_days,
             "total_active_days": total_active_days,
             "badges": badges,
@@ -373,12 +471,25 @@ class LeetCodeIntegration(SimulatedPlatformMixin):
             topics.sort(key=lambda t: t["solved"], reverse=True)
             return {"total": solved, "topics": topics}
 
+        contest_rating_val = int(rng.randint(1450, 2100) + level * 150)
+        attended = rng.randint(10, 80)
+        total_p = rng.randint(50000, 3000000)
         return {
             "total_solved": total,
             "easy": easy,
             "medium": medium,
             "hard": hard,
-            "contest_rating": int(rng.randint(1450, 2100) + level * 150),
+            "total_questions": int(total * rng.uniform(1.8, 2.5)),
+            "total_easy": int(total * rng.uniform(1.6, 2.2)),
+            "total_medium": int(total * rng.uniform(1.8, 2.4)),
+            "total_hard": int(total * rng.uniform(2.0, 3.0)),
+            "contest_rating": contest_rating_val,
+            "contest_level": _contest_level(contest_rating_val),
+            "attended_contests": attended,
+            "global_ranking": rng.randint(100, 50000),
+            "total_participants": total_p,
+            "top_percentage": round(rng.uniform(0.5, 15.0), 2),
+            "contest_history": [],
             "contest_rank": rng.randint(500, 60000),
             "streak_days": rng.randint(0, 120),
             "total_active_days": rng.randint(100, 800),

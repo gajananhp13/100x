@@ -5,25 +5,33 @@ import app.core.ai.genkit_flow as genkit_flow
 from app.core.ai.genkit_flow import scrape_github_profile
 
 
+def profile_html():
+    return """<html><head>
+<meta name="description" content="octo has 0 repositories available.">
+<meta property="og:image" content="https://avatars.example/u">
+</head><body>
+<h1 class="vcard-names"><span itemprop="name"> The Octo </span></h1>
+<ul class="vcard-details">
+  <li class="vcard-detail" aria-label="Location: loc"></li>
+</ul>
+<a href="https://github.com/octo?tab=followers"><svg></svg>
+  <span class="text-bold color-fg-default">1</span> followers</a>
+<a href="https://github.com/octo?tab=following">
+  <span class="text-bold color-fg-default">0</span> following</a>
+</body></html>"""
+
+
+def empty_repos_html():
+    return '<div id="user-repositories-list"><ul></ul></div>'
+
+
 def build_transport() -> httpx.MockTransport:
     def handler(request: httpx.Request) -> httpx.Response:
         url = str(request.url)
-        if "/users/octo/repos" in url:
-            return httpx.Response(200, json=[])
-        if "/users/octo" in url:
-            return httpx.Response(
-                200,
-                json={
-                    "login": "octo",
-                    "avatar_url": "https://avatars.example/u",
-                    "public_repos": 0,
-                    "followers": 1,
-                    "following": 0,
-                    "created_at": "2020-01-01T00:00:00Z",
-                    "bio": "bio",
-                    "location": "loc",
-                },
-            )
+        if "tab=repositories" in url:
+            return httpx.Response(200, text=empty_repos_html())
+        if url.rstrip("/") == "https://github.com/octo":
+            return httpx.Response(200, text=profile_html())
         return httpx.Response(500, text=f"unhandled: {url}")
 
     return httpx.MockTransport(handler)
@@ -40,7 +48,7 @@ async def test_flow_collects_profile(monkeypatch):
 
     assert out.success is True
     assert out.data is not None
-    assert out.data["_source"] == "github-api"
+    assert out.data["_source"] == "github-html"
     assert out.data["username"] == "octo"
     assert out.summary is None
     assert out.error is None

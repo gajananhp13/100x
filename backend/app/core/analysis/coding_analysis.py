@@ -6,7 +6,7 @@ from ...models.analysis import CodingAnalysis, CodingPlatformProfile
 from ...models.profiles import ConnectedProfile
 from ..integrations.registry import PLATFORM_BY_ID
 
-CODING_PLATFORMS = ("leetcode", "codeforces", "codechef", "geeksforgeeks", "hackerrank", "kaggle")
+CODING_PLATFORMS = ("leetcode", "codeforces", "codechef", "geeksforgeeks", "hackerrank")
 
 # (platform, weight, extractor) — extractor returns a 0..100 sub-score or None
 _SCORERS: dict[str, tuple[float]] = {
@@ -14,8 +14,7 @@ _SCORERS: dict[str, tuple[float]] = {
     "codeforces": (0.25,),
     "codechef": (0.15,),
     "geeksforgeeks": (0.15,),
-    "hackerrank": (0.10,),
-    "kaggle": (0.05,),
+    "hackerrank": (0.15,),
 }
 
 
@@ -48,15 +47,9 @@ def _score_geeksforgeeks(s: dict) -> float:
 
 def _score_hackerrank(s: dict) -> float:
     stars = int(s.get("stars", 0) or 0)
-    certs = int(s.get("certificates", 0) or 0)
-    return round(_norm(stars, 5) * 0.7 + _norm(certs, 3) * 0.3, 1)
-
-
-def _score_kaggle(s: dict) -> float:
-    medals = s.get("medals", {}) or {}
-    comps = int(s.get("competitions", 0) or 0)
-    med_val = (medals.get("gold", 0) * 3 + medals.get("silver", 0) * 2 + medals.get("bronze", 0)) / 6
-    return round(_norm(med_val, 4) * 0.7 + _norm(comps, 12) * 0.3, 1)
+    # "certificates" (old demo data) or "total_badges" (live API)
+    certs = int(s.get("certificates", 0) or s.get("total_badges", 0) or 0)
+    return round(_norm(stars, 5) * 0.7 + _norm(certs, 15) * 0.3, 1)
 
 
 _SCORERS_IMPL = {
@@ -65,7 +58,6 @@ _SCORERS_IMPL = {
     "codechef": _score_codechef,
     "geeksforgeeks": _score_geeksforgeeks,
     "hackerrank": _score_hackerrank,
-    "kaggle": _score_kaggle,
 }
 
 

@@ -51,8 +51,7 @@ def test_unknown_platform_returns_none():
 def test_detect_all_maps_every_platform():
     text = (
         "github.com/ab | linkedin.com/in/bb | leetcode.com/u/cc | codeforces.com/profile/dd | "
-        "codechef.com/users/ee | hackerrank.com/ff | kaggle.com/gg | devpost.com/hh | "
-        "medium.com/@ii | dev.to/jj | hashnode.com/@kk | twitch.tv/nope"
+        "codechef.com/users/ee | hackerrank.com/ff | devpost.com/hh | twitch.tv/nope"
     )
     handles = detect_all(_resume(text))
     assert handles["github"] == "ab"
@@ -61,11 +60,12 @@ def test_detect_all_maps_every_platform():
     assert handles["codeforces"] == "dd"
     assert handles["codechef"] == "ee"
     assert handles["hackerrank"] == "ff"
-    assert handles["kaggle"] == "gg"
     assert handles["devpost"] == "hh"
-    assert handles["medium"] == "ii"
-    assert handles["devto"] == "jj"
-    assert handles["hashnode"] == "kk"
+    assert "kaggle" not in handles
+    assert "medium" not in handles
+    assert "devto" not in handles
+    assert "hashnode" not in handles
+    assert "twitter" not in handles
     assert "twitch" not in handles
 
 

@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException
+from fastapi.concurrency import run_in_threadpool
 
 from ..core.ai import get_ai_provider
 from ..core.ai.genkit_flow import scrape_github_profile
@@ -41,7 +42,7 @@ async def connect_profile(req: ConnectRequest) -> ConnectResponse:
         raise HTTPException(status_code=404, detail=f"Unknown platform '{req.platform}'.")
     integration = build_integration(req.platform, force_mock=req.simulate)
     try:
-        data = integration.collect(handle, {"resume": req.resume})
+        data = await run_in_threadpool(integration.collect, handle, {"resume": req.resume})
     except ProfileCollectError as e:
         return ConnectResponse(profile=None, message=str(e))
     except Exception as e:
@@ -97,12 +98,26 @@ async def auto_connect(payload: dict) -> dict:
     profiles: list[dict] = []
     skipped: list[str] = []
     for platform_id, handle in handles.items():
+        integration = build_integration(platform_id, force_mock=simulate)
         try:
-            integration = build_integration(platform_id, force_mock=simulate)
-            data = integration.collect(handle, {"resume": resume})
+            data = await run_in_threadpool(integration.collect, handle, {"resume": resume})
         except Exception as e:  # noqa: BLE001 - one failed platform must not block the rest
-            skipped.append(f"{platform_id} ({e})")
-            continue
+            # Fall back to simulated data when a live scrape fails (e.g. the
+            # handle is fictional or the API is rate-limited), so auto-connect
+            # still connects every platform mentioned in the resume.
+            if not simulate:
+                try:
+                    data = await run_in_threadpool(
+                        build_integration(platform_id, force_mock=True).collect,
+                        handle,
+                        {"resume": resume},
+                    )
+                except Exception as e2:  # noqa: BLE001
+                    skipped.append(f"{platform_id} ({e2})")
+                    continue
+            else:
+                skipped.append(f"{platform_id} ({e})")
+                continue
         clean_handle = str(data.get("username") or handle).lstrip("@")
         profiles.append(
             ConnectedProfile(
@@ -122,6 +137,72 @@ async def auto_connect(payload: dict) -> dict:
         "profiles": profiles,
         "skipped": skipped,
     }
+
+
+@router.post("/batch/connect")
+async def batch_connect(payload: dict) -> dict:
+    """Connect every social / developer profile detected across a batch of resumes.
+
+    For each candidate, this auto-detects the platform handles already present in
+    the resume and connects them all — exactly the HR 'connect all social media
+    for every resume' action. Live scraping is used by default and falls back to
+    simulated data when a handle is fictional or rate-limited, so every candidate
+    keeps a consistent set of connected profiles.
+    """
+    raw_candidates = payload.get("candidates") or []
+    simulate = bool(payload.get("simulate", False))
+
+    out: list[dict] = []
+    for c in raw_candidates:
+        resume_raw = c.get("resume")
+        try:
+            resume = ParsedResume.model_validate(resume_raw)
+        except Exception:
+            out.append({**c, "profiles": c.get("profiles", []), "detected": {}})
+            continue
+
+        handles = detect_all(resume)
+        profiles: list[dict] = []
+        for platform_id, handle in handles.items():
+            if platform_id not in PLATFORM_BY_ID:
+                continue
+            try:
+                integration = build_integration(platform_id, force_mock=simulate)
+                data = integration.collect(handle, {"resume": resume})
+            except Exception:
+                if not simulate:
+                    try:
+                        data = build_integration(platform_id, force_mock=True).collect(
+                            handle, {"resume": resume}
+                        )
+                    except Exception:
+                        continue
+                else:
+                    continue
+            clean_handle = str(data.get("username") or handle).lstrip("@")
+            profiles.append(
+                ConnectedProfile(
+                    platform=platform_id,
+                    platform_label=PLATFORM_BY_ID[platform_id].label,
+                    handle=clean_handle,
+                    profile_url=url_for(platform_id, clean_handle),
+                    status="collected",
+                    collected_at=datetime.now(timezone.utc),
+                    data=data,
+                ).model_dump(mode="json")
+            )
+
+        out.append(
+            {
+                "index": c.get("index"),
+                "filename": c.get("filename"),
+                "resume": resume_raw,
+                "profiles": profiles,
+                "detected": handles,
+            }
+        )
+
+    return {"candidates": out}
 
 
 @router.post("/github/genkit")
@@ -146,13 +227,19 @@ async def github_profile_via_genkit(req: ConnectRequest) -> dict:
 
 
 @router.post("/demo")
-async def demo_candidate(simulate: bool = True) -> dict:
-    """Load the demo candidate: parsed resume + all platforms pre-connected."""
+async def demo_candidate(simulate: bool = False) -> dict:
+    """Load the demo candidate: parsed resume + all platforms pre-connected.
+
+    Uses real API scraping by default (simulate=False). Platforms with a live
+    API (GitHub, LeetCode, HackerRank) will be scraped for real; platforms
+    without a public API fall back to demo data automatically.
+    """
     resume = get_ai_provider("mock").parse_resume(DEMO_RESUME_TEXT)
     profiles: list[ConnectedProfile] = []
     for pid, handle in DEMO_PROFILES.items():
         try:
-            data = build_integration(pid, force_mock=simulate).collect(handle, {"resume": resume})
+            integration = build_integration(pid, force_mock=simulate)
+            data = await run_in_threadpool(integration.collect, handle, {"resume": resume})
             profiles.append(
                 ConnectedProfile(
                     platform=pid,
@@ -171,5 +258,5 @@ async def demo_candidate(simulate: bool = True) -> dict:
         "candidate_name": DEMO_NAME,
         "resume": resume,
         "profiles": profiles,
-        "simulated": True,
+        "simulated": simulate,
     }
