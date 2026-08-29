@@ -6,22 +6,32 @@ This script helps you create a linkedin_session.json file by logging in manually
 The session file is needed to run integration tests and scraping examples.
 
 Usage:
-    python samples/create_session.py
+    python scripts/create_session.py
     
 The script will:
 1. Open a browser window with LinkedIn login page
 2. Wait for you to manually log in (up to 5 minutes)
 3. Automatically detect when login is complete
-4. Save your session to linkedin_session.json
+4. Save your session to the path configured in LINKEDIN_SESSION_PATH (default: data/linkedin_session.json)
 
 Note: The session file contains authentication cookies and should never be committed to git.
 """
 import asyncio
+import sys
+from pathlib import Path
+
+# Add backend to path to import settings
+BACKEND_DIR = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(BACKEND_DIR))
+
+from app.config import settings
 from linkedin_scraper import BrowserManager, wait_for_manual_login
 
 
 async def create_session():
     """Create a LinkedIn session file through manual login."""
+    session_path = settings.linkedin_session_path or "data/linkedin_session.json"
+    
     print("="*60)
     print("LinkedIn Session Creator")
     print("="*60)
@@ -30,7 +40,7 @@ async def create_session():
     print("1. A browser window will open")
     print("2. Log in to LinkedIn manually")
     print("3. The script will detect when you're logged in")
-    print("4. Your session will be saved to linkedin_session.json")
+    print(f"4. Your session will be saved to {session_path}")
     print("\n" + "="*60 + "\n")
     
     async with BrowserManager(headless=False) as browser:
@@ -55,8 +65,8 @@ async def create_session():
             print("  - Wait until your LinkedIn feed loads")
             return
         
-        # Save session to project root
-        session_path = "linkedin_session.json"
+        # Save session to configured path
+        Path(session_path).parent.mkdir(parents=True, exist_ok=True)
         print(f"\n💾 Saving session to {session_path}...")
         await browser.save_session(session_path)
         
@@ -66,7 +76,7 @@ async def create_session():
         print(f"\nSession saved to: {session_path}")
         print("\nYou can now:")
         print("  - Run integration tests: pytest")
-        print("  - Run example scripts: python samples/scrape_person.py")
+        print("  - Run example scripts: python scripts/verify_linkedin_scrape.py")
         print("\nNote: Keep this file secure and don't commit it to git.")
         print("="*60 + "\n")
 

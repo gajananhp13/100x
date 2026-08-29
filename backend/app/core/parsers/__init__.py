@@ -4,6 +4,7 @@ from .extractor import (
     extract_docx_text,
     extract_pdf_text,
     extract_text,
+    extract_and_scan,
 )
 
 __all__ = [
@@ -12,4 +13,5 @@ __all__ = [
     "extract_docx_text",
     "extract_pdf_text",
     "extract_text",
+    "extract_and_scan",
 ]
