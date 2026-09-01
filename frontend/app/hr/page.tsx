@@ -6,17 +6,40 @@ import { api } from "@/lib/api";
 import { PlatformIcon } from "@/components/platform-icon";
 import { platformById } from "@/lib/platforms";
 import type { ParsedResume, ResumeBatchCandidate, ResumeBatchResult } from "@/lib/types";
-import { Button, Card, Chip, ScoreRing, Spinner } from "@/components/ui";
+import { Button, Chip, ScoreRing, Spinner } from "@/components/ui";
 import { cn } from "@/lib/cn";
 import {
-  Upload, FileText, X, ArrowRight, RotateCcw, Users, Link2, Trophy, AlertCircle, Check,
-  Send, Sparkles, Bot,
+  Upload, FileText, X, ArrowRight, RotateCcw, Users, Link2, Trophy,
+  AlertCircle, Check, Send, Sparkles, Bot,
 } from "lucide-react";
 
+/* ─────────────────────────────────────────────────────────────────── */
+/* Types                                                               */
+/* ─────────────────────────────────────────────────────────────────── */
 type Phase = "upload" | "parsed" | "results";
-type Busy = "parse" | "connect" | "validate" | null;
+type Busy  = "parse" | "connect" | "validate" | null;
+type ChatMessage = { role: "user" | "assistant"; text: string };
 
-/* ── suggestion chips ── */
+/* ─────────────────────────────────────────────────────────────────── */
+/* Helpers                                                             */
+/* ─────────────────────────────────────────────────────────────────── */
+function flattenSkills(resume: ParsedResume): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const list of Object.values(resume.skills)) {
+    for (const s of list) {
+      if (s && !seen.has(s.toLowerCase())) {
+        seen.add(s.toLowerCase());
+        out.push(s);
+      }
+    }
+  }
+  return out;
+}
+
+/* ─────────────────────────────────────────────────────────────────── */
+/* AI chat filter                                                      */
+/* ─────────────────────────────────────────────────────────────────── */
 const SUGGESTIONS = [
   "Show me resumes trusted with JavaScript and TypeScript",
   "Who has GitHub connected?",
@@ -25,48 +48,52 @@ const SUGGESTIONS = [
   "Who has LeetCode connected?",
 ];
 
-function flattenSkills(resume: ParsedResume): string[] {
-  candidates: ResumeBatchCandidate[],
-  query: string,
-): ResumeBatchCandidate[] {
-  if (!query.trim()) return candidates;
+const FILTER_STOP = new Set([
+  "me","show","filter","give","list","find","with","and","or","the","who","has","have",
+  "a","an","for","of","in","on","at","to","trusted","resumes","candidates","resume",
+  "candidate","top","ranked","using","candidates","some","all","only",
+]);
+
+function applyFilter(pool: ResumeBatchCandidate[], query: string): ResumeBatchCandidate[] {
+  if (!query.trim()) return pool;
   const q = query.toLowerCase();
 
-  const STOP = new Set(["me", "show", "filter", "give", "list", "find", "with", "and", "or",
-    "the", "who", "has", "have", "a", "an", "for", "of", "in", "on", "at", "to", "trusted",
-    "resumes", "candidates", "resume", "candidate", "top", "ranked", "using"]);
   const tokens = q
     .split(/[\s,+&]+/)
     .map(t => t.replace(/[^a-z0-9#.+]/g, ""))
-    .filter(t => t.length >= 2 && !STOP.has(t));
+    .filter(t => t.length >= 2 && !FILTER_STOP.has(t));
 
-  if (tokens.length === 0) return candidates;
-
-  return candidates.filter(c => {
-    const skills = Object.values(c.resume.skills).flat().map(s => s.toLowerCase());
-    const techs = [
+  return pool.filter(c => {
+    const skills  = Object.values(c.resume.skills).flat().map(s => s.toLowerCase());
+    const techs   = [
       ...c.resume.experience.flatMap(e => e.technologies.map(t => t.toLowerCase())),
       ...c.resume.projects.flatMap(p => p.tech_stack.map(t => t.toLowerCase())),
     ];
     const platforms = (c.profiles ?? []).map(p => p.platform.toLowerCase());
     const all = [...skills, ...techs, ...platforms];
 
-    if (q.includes("trusted") || q.includes("verified")) {
-      if (c.integrity?.is_suspicious) return false;
-    }
-    if (q.includes("github") && !platforms.includes("github")) return false;
+    // "trusted / verified" → exclude suspicious resumes
+    if ((q.includes("trusted") || q.includes("verified")) && c.integrity?.is_suspicious) return false;
+
+    // explicit platform checks
+    if (q.includes("github")   && !platforms.includes("github"))   return false;
     if (q.includes("leetcode") && !platforms.includes("leetcode")) return false;
     if (q.includes("open source")) {
       const hasOSS = c.resume.achievements.some(a => a.type === "open_source");
       if (!hasOSS && !platforms.includes("github")) return false;
     }
-    const techTokens = tokens.filter(t => !["github", "leetcode", "open"].includes(t));
-    return techTokens.every(token => all.some(s => s.includes(token) || token.includes(s)));
+
+    // remaining tokens must all match at least one skill/tech
+    const techTokens = tokens.filter(t => !["github","leetcode","open","source"].includes(t));
+    return techTokens.length === 0 || techTokens.every(tok =>
+      all.some(s => s.includes(tok) || tok.includes(s))
+    );
   });
 }
 
-type ChatMessage = { role: "user" | "assistant"; text: string };
-
+/* ─────────────────────────────────────────────────────────────────── */
+/* RankingChat component                                               */
+/* ─────────────────────────────────────────────────────────────────── */
 function RankingChat({
   candidates,
   results,
@@ -74,47 +101,50 @@ function RankingChat({
 }: {
   candidates: ResumeBatchCandidate[];
   results: ResumeBatchResult | null;
-  onFilter: (filtered: ResumeBatchCandidate[] | null, query: string) => void;
+  onFilter: (filtered: ResumeBatchCandidate[] | null) => void;
 }) {
-  const [input, setInput] = useState("");
+  const [input, setInput]       = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [open, setOpen] = useState(false);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const textareaRef             = useRef<HTMLTextAreaElement>(null);
 
-  const pool = results?.candidates ?? candidates;
+  const pool = results?.candidates.length ? results.candidates : candidates;
+  const hasData = pool.length > 0;
 
   const submit = (query: string) => {
     const q = query.trim();
     if (!q) return;
+
     const filtered = applyFilter(pool, q);
-    const reply =
-      filtered.length === 0
-        ? "No candidates matched that filter. Try different keywords."
-        : filtered.length === pool.length
-        ? `Showing all ${pool.length} candidate(s) — no extra filter applied. Try specific technologies like "React" or "Python".`
-        : `Found ${filtered.length} of ${pool.length} candidate(s) matching "${q}".`;
+    const isAll = filtered.length === pool.length;
+
+    const reply = !hasData
+      ? "Upload and validate resumes first, then I can filter them for you."
+      : filtered.length === 0
+      ? "No candidates matched that filter. Try different keywords."
+      : isAll
+      ? `Showing all ${pool.length} candidate(s) — query matched everyone or no filters applied.`
+      : `Found ${filtered.length} of ${pool.length} candidate(s) matching "${q}".`;
+
     setMessages(prev => [
       ...prev,
-      { role: "user", text: q },
+      { role: "user",      text: q },
       { role: "assistant", text: reply },
     ]);
-    onFilter(filtered.length === pool.length ? null : filtered, q);
+    onFilter(isAll || !hasData ? null : filtered);
     setInput("");
-    setOpen(true);
   };
 
   const clear = () => {
     setMessages([]);
-    onFilter(null, "");
+    onFilter(null);
     setInput("");
-    setOpen(false);
   };
 
   return (
     <div className="mb-6 overflow-hidden rounded-xl border border-[#e4e4e7] bg-white shadow-sm">
       {/* Header */}
       <div className="flex items-center gap-2.5 border-b border-[#f0f0f2] px-4 py-3">
-        <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-[#eef2ff]">
+        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[#eef2ff]">
           <Bot className="h-4 w-4 text-[#4f46e5]" />
         </div>
         <div className="flex-1 min-w-0">
@@ -132,7 +162,7 @@ function RankingChat({
       </div>
 
       {/* Message thread */}
-      {open && messages.length > 0 && (
+      {messages.length > 0 && (
         <div className="max-h-44 overflow-y-auto px-4 py-3 space-y-2.5">
           {messages.map((m, i) => (
             <div key={i} className={cn("flex gap-2", m.role === "user" ? "justify-end" : "justify-start")}>
@@ -159,7 +189,7 @@ function RankingChat({
       {/* Suggestion chips — only when no conversation yet */}
       {messages.length === 0 && (
         <div className="flex flex-wrap gap-1.5 px-4 py-3">
-          {SUGGESTIONS.map((s) => (
+          {SUGGESTIONS.map(s => (
             <button
               key={s}
               onClick={() => submit(s)}
@@ -186,7 +216,7 @@ function RankingChat({
           }}
           placeholder='e.g. "Show me resumes trusted with JavaScript and TypeScript"'
           className="flex-1 resize-none rounded-lg border border-[#e4e4e7] bg-[#f4f4f5] px-3 py-2 text-sm text-[#09090b] placeholder:text-[#a1a1aa] transition-all focus:border-[#4f46e5] focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#4f46e5]/20"
-          style={{ minHeight: 36, maxHeight: 100 }}
+          style={{ minHeight: 36, maxHeight: 120 }}
         />
         <button
           onClick={() => submit(input)}
@@ -200,37 +230,29 @@ function RankingChat({
     </div>
   );
 }
-  const out: string[] = [];
-  const seen = new Set<string>();
-  for (const list of Object.values(resume.skills)) {
-    for (const s of list) {
-      if (s && !seen.has(s.toLowerCase())) {
-        seen.add(s.toLowerCase());
-        out.push(s);
-      }
-    }
-  }
-  return out;
-}
 
+/* ─────────────────────────────────────────────────────────────────── */
+/* Main page                                                           */
+/* ─────────────────────────────────────────────────────────────────── */
 export default function HrPage() {
-  const [phase, setPhase] = useState<Phase>("upload");
+  const [phase, setPhase]               = useState<Phase>("upload");
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
-  const [candidates, setCandidates] = useState<ResumeBatchCandidate[]>([]);
-  const [results, setResults] = useState<ResumeBatchResult | null>(null);
-  const [busy, setBusy] = useState<Busy>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [connectMsg, setConnectMsg] = useState<string | null>(null);
+  const [candidates, setCandidates]     = useState<ResumeBatchCandidate[]>([]);
+  const [results, setResults]           = useState<ResumeBatchResult | null>(null);
+  const [busy, setBusy]                 = useState<Busy>(null);
+  const [error, setError]               = useState<string | null>(null);
+  const [connectMsg, setConnectMsg]     = useState<string | null>(null);
+  const [filteredCandidates, setFilteredCandidates] = useState<ResumeBatchCandidate[] | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const addFiles = useCallback((files: FileList | null) => {
     if (!files || files.length === 0) return;
-    setPendingFiles((prev) => [...prev, ...Array.from(files)]);
+    setPendingFiles(prev => [...prev, ...Array.from(files)]);
     setError(null);
   }, []);
 
   const removePending = (i: number) =>
-    setPendingFiles((prev) => prev.filter((_, idx) => idx !== i));
+    setPendingFiles(prev => prev.filter((_, idx) => idx !== i));
 
   const parse = async () => {
     if (pendingFiles.length === 0) return;
@@ -239,7 +261,7 @@ export default function HrPage() {
     try {
       const res = await api.uploadResumeBatch(pendingFiles);
       if (res.failed > 0 && res.processed === 0) {
-        setError(res.errors.map((e) => `${e.filename}: ${e.detail}`).join(" · "));
+        setError(res.errors.map(e => `${e.filename}: ${e.detail}`).join(" · "));
         return;
       }
       setCandidates(res.candidates);
@@ -258,11 +280,11 @@ export default function HrPage() {
     setConnectMsg(null);
     try {
       const res = await api.connectBatchProfiles(
-        candidates.map((c) => ({ index: c.index, filename: c.filename, resume: c.resume })),
+        candidates.map(c => ({ index: c.index, filename: c.filename, resume: c.resume })),
       );
-      const byIndex = new Map(res.candidates.map((c) => [c.index, c]));
-      setCandidates((prev) =>
-        prev.map((c) => {
+      const byIndex = new Map(res.candidates.map(c => [c.index, c]));
+      setCandidates(prev =>
+        prev.map(c => {
           const updated = byIndex.get(c.index);
           return updated ? { ...c, profiles: updated.profiles, detected: updated.detected } : c;
         }),
@@ -270,7 +292,7 @@ export default function HrPage() {
       const total = res.candidates.reduce((n, c) => n + (c.profiles?.length ?? 0), 0);
       setConnectMsg(
         total > 0
-          ? `Connected ${total} profile(s) across ${res.candidates.filter((c) => (c.profiles?.length ?? 0) > 0).length} resume(s).`
+          ? `Connected ${total} profile(s) across ${res.candidates.filter(c => (c.profiles?.length ?? 0) > 0).length} resume(s).`
           : "No social/developer profiles were detected in these resumes.",
       );
     } catch (e) {
@@ -286,7 +308,7 @@ export default function HrPage() {
     setError(null);
     try {
       const res = await api.analyzeBatch(
-        candidates.map((c) => ({
+        candidates.map(c => ({
           index: c.index,
           filename: c.filename,
           resume: c.resume,
@@ -309,9 +331,16 @@ export default function HrPage() {
     setResults(null);
     setConnectMsg(null);
     setError(null);
+    setFilteredCandidates(null);
   };
 
   const connectedCount = candidates.reduce((n, c) => n + (c.profiles?.length ?? 0), 0);
+
+  // What to show in results/parsed views (filtered or full)
+  const displayCandidates = filteredCandidates ?? candidates;
+  const displayResults    = filteredCandidates && results
+    ? { ...results, candidates: filteredCandidates as typeof results.candidates }
+    : results;
 
   return (
     <div className="mx-auto flex min-h-screen max-w-5xl flex-col px-6 py-6">
@@ -327,7 +356,7 @@ export default function HrPage() {
       </header>
 
       {/* Page title */}
-      <div className="mb-8">
+      <div className="mb-6">
         <div className="mb-1 text-xs font-semibold uppercase tracking-widest text-[#4f46e5]">HR Mode</div>
         <h1 className="text-2xl font-bold tracking-tight text-[#09090b]">Candidate Ranking</h1>
         <p className="mt-1.5 max-w-xl text-sm text-[#71717a]">
@@ -335,6 +364,13 @@ export default function HrPage() {
           candidates by their evidence-backed score.
         </p>
       </div>
+
+      {/* ── AI chat filter ── */}
+      <RankingChat
+        candidates={candidates}
+        results={results}
+        onFilter={setFilteredCandidates}
+      />
 
       {/* Error */}
       {error && (
@@ -361,9 +397,16 @@ export default function HrPage() {
           {/* Action bar */}
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#e4e4e7] bg-white p-4">
             <div className="text-sm text-[#71717a]">
-              <span className="font-semibold text-[#09090b]">{candidates.length}</span> resume(s) parsed
+              <span className="font-semibold text-[#09090b]">
+                {filteredCandidates ? `${filteredCandidates.length} of ` : ""}
+                {candidates.length}
+              </span>
+              {" "}resume(s) parsed
               {connectedCount > 0 && (
                 <span className="ml-2 text-xs font-medium text-[#16a34a]">· {connectedCount} profiles connected</span>
+              )}
+              {filteredCandidates && (
+                <span className="ml-2 text-xs font-medium text-[#4f46e5]">· filtered</span>
               )}
             </div>
             <div className="flex flex-wrap gap-2">
@@ -399,7 +442,7 @@ export default function HrPage() {
           )}
 
           <div className="grid gap-3 md:grid-cols-2">
-            {candidates.map((c) => {
+            {displayCandidates.map(c => {
               const skills = flattenSkills(c.resume);
               return (
                 <div key={c.index} className="rounded-xl border border-[#e4e4e7] bg-white p-4">
@@ -419,19 +462,13 @@ export default function HrPage() {
                       <Chip className="shrink-0">{c.resume.personal.headline}</Chip>
                     )}
                   </div>
-
                   <div className="mt-3 flex flex-wrap gap-1">
-                    {skills.slice(0, 8).map((s) => (
-                      <Chip key={s}>{s}</Chip>
-                    ))}
-                    {skills.length > 8 && (
-                      <Chip tone="brand">+{skills.length - 8}</Chip>
-                    )}
+                    {skills.slice(0, 8).map(s => <Chip key={s}>{s}</Chip>)}
+                    {skills.length > 8 && <Chip tone="brand">+{skills.length - 8}</Chip>}
                   </div>
-
                   {c.profiles && c.profiles.length > 0 && (
                     <div className="mt-3 flex flex-wrap gap-1.5">
-                      {c.profiles.map((p) => (
+                      {c.profiles.map(p => (
                         <span
                           key={p.platform}
                           className="inline-flex items-center gap-1 rounded-lg border border-[#e4e4e7] bg-[#f4f4f5] px-2 py-1 text-[11px] font-medium text-[#52525b]"
@@ -449,8 +486,13 @@ export default function HrPage() {
         </div>
       )}
 
-      {phase === "results" && results && (
-        <ResultsTable results={results} onReset={reset} />
+      {phase === "results" && displayResults && (
+        <ResultsTable
+          results={displayResults}
+          totalCount={results?.candidates.length ?? 0}
+          isFiltered={!!filteredCandidates}
+          onReset={reset}
+        />
       )}
     </div>
   );
@@ -474,9 +516,9 @@ function UploadStep({
   return (
     <div className="space-y-4">
       <div
-        onDragOver={(e) => { e.preventDefault(); setDrag(true); }}
+        onDragOver={e => { e.preventDefault(); setDrag(true); }}
         onDragLeave={() => setDrag(false)}
-        onDrop={(e) => { e.preventDefault(); setDrag(false); onAdd(e.dataTransfer.files); }}
+        onDrop={e => { e.preventDefault(); setDrag(false); onAdd(e.dataTransfer.files); }}
         onClick={() => inputRef.current?.click()}
         className={cn(
           "cursor-pointer rounded-xl border-2 border-dashed p-14 text-center transition-all",
@@ -489,14 +531,10 @@ function UploadStep({
           accept=".pdf,.docx"
           multiple
           className="hidden"
-          onChange={(e) => { onAdd(e.target.files); e.target.value = ""; }}
+          onChange={e => { onAdd(e.target.files); e.target.value = ""; }}
         />
-        <div
-          className={cn(
-            "mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl transition-colors",
-            drag ? "bg-[#4f46e5] text-white" : "bg-[#f4f4f5] text-[#71717a]",
-          )}
-        >
+        <div className={cn("mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl transition-colors",
+          drag ? "bg-[#4f46e5] text-white" : "bg-[#f4f4f5] text-[#71717a]")}>
           <Upload className="h-7 w-7" />
         </div>
         <h3 className="text-base font-semibold text-[#09090b]">
@@ -514,14 +552,11 @@ function UploadStep({
           </div>
           <div className="flex flex-wrap gap-2">
             {files.map((f, i) => (
-              <span
-                key={`${f.name}-${i}`}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-[#e4e4e7] bg-[#f4f4f5] px-3 py-1.5 text-sm text-[#09090b]"
-              >
+              <span key={`${f.name}-${i}`} className="inline-flex items-center gap-1.5 rounded-lg border border-[#e4e4e7] bg-[#f4f4f5] px-3 py-1.5 text-sm text-[#09090b]">
                 <FileText className="h-3.5 w-3.5 text-[#a1a1aa]" />
                 {f.name}
                 <button
-                  onClick={(e) => { e.stopPropagation(); onRemove(i); }}
+                  onClick={e => { e.stopPropagation(); onRemove(i); }}
                   className="ml-0.5 rounded p-0.5 text-[#a1a1aa] transition-colors hover:text-[#dc2626]"
                   aria-label={`Remove ${f.name}`}
                 >
@@ -544,12 +579,23 @@ function UploadStep({
 /* ─────────────────────────────────────────────────────────────────── */
 /* Results Table                                                       */
 /* ─────────────────────────────────────────────────────────────────── */
-function ResultsTable({ results, onReset }: { results: ResumeBatchResult; onReset: () => void }) {
+function ResultsTable({
+  results, totalCount, isFiltered, onReset,
+}: {
+  results: ResumeBatchResult;
+  totalCount: number;
+  isFiltered: boolean;
+  onReset: () => void;
+}) {
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#e4e4e7] bg-white p-4">
         <div className="text-sm text-[#71717a]">
-          <span className="font-semibold text-[#09090b]">{results.candidates.length}</span> candidate(s) ranked by overall score
+          <span className="font-semibold text-[#09090b]">
+            {isFiltered ? `${results.candidates.length} of ${totalCount}` : results.candidates.length}
+          </span>
+          {" "}candidate(s) ranked by overall score
+          {isFiltered && <span className="ml-2 text-xs font-medium text-[#4f46e5]">· filtered</span>}
           {results.failed > 0 && (
             <span className="ml-2 text-xs text-[#dc2626]">· {results.failed} failed</span>
           )}
@@ -570,7 +616,6 @@ function ResultsTable({ results, onReset }: { results: ResumeBatchResult; onRese
         </div>
       )}
 
-      {/* Table */}
       <div className="overflow-hidden rounded-xl border border-[#e4e4e7] bg-white">
         {/* Header */}
         <div className="hidden grid-cols-[56px_1fr_100px_1fr_110px] gap-4 border-b border-[#f0f0f2] bg-[#f4f4f5] px-5 py-3 text-[10px] font-bold uppercase tracking-widest text-[#a1a1aa] md:grid">
@@ -583,33 +628,28 @@ function ResultsTable({ results, onReset }: { results: ResumeBatchResult; onRese
 
         {results.candidates.map((c, rowIdx) => {
           const topScores = (c.scores ?? [])
-            .filter((s) => SCORE_RANK_KEYS.includes(s.key))
+            .filter(s => SCORE_RANK_KEYS.includes(s.key))
             .slice(0, 4);
           return (
             <div
               key={c.report_id ?? c.index}
               className={cn(
-                "grid grid-cols-1 gap-3 px-5 py-4 md:grid-cols-[56px_1fr_100px_1fr_110px] md:items-center",
+                "grid grid-cols-1 gap-3 px-5 py-4 transition-colors hover:bg-[#fafafa] md:grid-cols-[56px_1fr_100px_1fr_110px] md:items-center",
                 rowIdx < results.candidates.length - 1 && "border-b border-[#f0f0f2]",
-                "transition-colors hover:bg-[#fafafa]",
               )}
             >
-              {/* Rank */}
               <div>
-                <span
-                  className={cn(
-                    "inline-flex h-8 w-8 items-center justify-center rounded-lg text-sm font-bold",
-                    rowIdx === 0 && "bg-[#fbbf24] text-white",
-                    rowIdx === 1 && "bg-[#a1a1aa] text-white",
-                    rowIdx === 2 && "bg-[#92400e] text-white",
-                    rowIdx > 2  && "bg-[#f4f4f5] text-[#52525b]",
-                  )}
-                >
+                <span className={cn(
+                  "inline-flex h-8 w-8 items-center justify-center rounded-lg text-sm font-bold",
+                  rowIdx === 0 && "bg-[#fbbf24] text-white",
+                  rowIdx === 1 && "bg-[#a1a1aa] text-white",
+                  rowIdx === 2 && "bg-[#92400e] text-white",
+                  rowIdx > 2  && "bg-[#f4f4f5] text-[#52525b]",
+                )}>
                   #{c.rank}
                 </span>
               </div>
 
-              {/* Candidate */}
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
                   <span className="truncate text-sm font-semibold text-[#09090b]">
@@ -622,21 +662,18 @@ function ResultsTable({ results, onReset }: { results: ResumeBatchResult; onRese
                 <div className="truncate text-xs text-[#a1a1aa]">{c.filename}</div>
               </div>
 
-              {/* Score ring */}
               <div>
                 <ScoreRing value={c.overall_score ?? 0} size={52} stroke={5} />
               </div>
 
-              {/* Key metrics */}
               <div className="flex flex-wrap gap-1.5">
-                {topScores.map((s) => (
+                {topScores.map(s => (
                   <Chip key={s.key} className="text-[11px]">
                     {s.label.replace(/ Score$/, "")} {Math.round(s.value)}
                   </Chip>
                 ))}
               </div>
 
-              {/* Action */}
               <div className="text-right">
                 {c.report_id ? (
                   <Link
