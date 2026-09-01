@@ -69,6 +69,76 @@ def test_person_to_scrape_data_maps_certifications_and_skills():
         "Kafka": None,
     }
     assert data["endorsements"] == 12
+    # Experience mapping
+    assert len(data["experiences"]) == 1
+    exp = data["experiences"][0]
+    assert exp["position_title"] == "Backend Developer"
+    assert exp["company"] == "TechNova"
+    # linkedin_url is not mapped for experiences in person_to_scrape_data
+
+
+def test_person_to_scrape_data_maps_experience_fields():
+    """Verify full experience field mapping including dates, location, description."""
+    person = Person(
+        linkedin_url="https://www.linkedin.com/in/test",
+        name="Test User",
+        location="San Francisco, CA",
+        experiences=[
+            Experience(
+                position_title="Senior Engineer",
+                institution_name="Acme Corp",
+                from_date="2022",
+                to_date="Present",
+                duration="2 yrs",
+                location="San Francisco, CA",
+                description="Built scalable systems.",
+            ),
+            Experience(
+                position_title="Junior Engineer",
+                institution_name="Startup Inc",
+                from_date="2020",
+                to_date="2022",
+                duration="2 yrs",
+                location="Remote",
+                description="Early stage product work.",
+            ),
+        ],
+    )
+    data = person_to_scrape_data(person, "testuser")
+    assert len(data["experiences"]) == 2
+    exp1 = data["experiences"][0]
+    assert exp1["position_title"] == "Senior Engineer"
+    assert exp1["company"] == "Acme Corp"
+    assert exp1["from_date"] == "2022"
+    assert exp1["to_date"] == "Present"
+    assert exp1["duration"] == "2 yrs"
+    assert exp1["location"] == "San Francisco, CA"
+    assert exp1["description"] == "Built scalable systems."
+    exp2 = data["experiences"][1]
+    assert exp2["position_title"] == "Junior Engineer"
+    assert exp2["company"] == "Startup Inc"
+
+
+def test_person_to_scrape_data_maps_skills_with_endorsements():
+    """Verify skills include name, endorsements, and URL."""
+    person = Person(
+        linkedin_url="https://www.linkedin.com/in/test",
+        name="Test User",
+        skills=[
+            Skill(name="Python", endorsements=42, linkedin_url="https://linkedin.com/skill/python"),
+            Skill(name="Go", endorsements=0),
+            Skill(name="Rust"),
+        ],
+    )
+    data = person_to_scrape_data(person, "testuser")
+    assert len(data["skills"]) == 3
+    skills_by_name = {s["name"]: s for s in data["skills"]}
+    assert skills_by_name["Python"]["endorsements"] == 42
+    assert skills_by_name["Python"]["url"] == "https://linkedin.com/skill/python"
+    assert skills_by_name["Go"]["endorsements"] == 0
+    assert skills_by_name["Rust"]["endorsements"] is None
+    assert skills_by_name["Rust"]["url"] is None
+    assert data["endorsements"] == 42  # sum of non-None endorsements
 
 
 def test_gated_when_disabled_returns_mock(monkeypatch):

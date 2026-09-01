@@ -226,6 +226,19 @@ def render_pdf(report) -> bytes:
     story.append(Spacer(1, 8))
     story.append(ProgressBar(a.overall_score, width=180, height=10, color=EMERALD if a.overall_score >= 60 else AMBER))
     story.append(Paragraph(f"Overall Candidate Score — {round(a.overall_score)}/100", st["small"]))
+
+    # --- Integrity / Manipulation Risk ---
+    if a.resume.integrity and a.resume.integrity.is_suspicious:
+        story.append(_section_header("Integrity / Manipulation Risk"))
+        story.append(Paragraph(
+            "The resume document contained hidden/injected text or prompt-injection patterns "
+            "that may have affected the analysis. Scores below reflect only publicly verifiable evidence.",
+            st["body"]))
+        if a.resume.integrity.notes:
+            for note in a.resume.integrity.notes:
+                story.append(Paragraph(f"• {note}", st["small"]))
+        story.append(Spacer(1, 4))
+
     story.append(PageBreak())
 
     # ---------- 1. Candidate Overview ----------
@@ -351,10 +364,18 @@ def render_pdf(report) -> bytes:
     # ---------- 9. LinkedIn Certifications ----------
     linkedin_profiles = [p for p in a.profiles if p.platform == "linkedin" and p.status == "collected"]
     linkedin_certs = []
+    linkedin_experiences = []
+    linkedin_skills = []
     for prof in linkedin_profiles:
         for c in (prof.data or {}).get("certifications") or []:
             linkedin_certs.append(c)
+        for e in (prof.data or {}).get("experiences") or []:
+            linkedin_experiences.append(e)
+        for s in (prof.data or {}).get("skills") or []:
+            linkedin_skills.append(s)
+
     if linkedin_profiles:
+        # --- 9. LinkedIn Certifications ---
         story.append(_section_header("9. LinkedIn Certifications"))
         if linkedin_certs:
             rows = [["Certification", "Issuer", "Issued", "Credential ID"]]
@@ -370,18 +391,74 @@ def render_pdf(report) -> bytes:
             story.append(Paragraph("No certifications listed on the connected LinkedIn profile.", st["body"]))
         story.append(Spacer(1, 4))
 
-    # ---------- 10. Strengths ----------
-    story.append(_section_header("10. Strengths"))
+        # --- 10. LinkedIn Experience ---
+        story.append(_section_header("10. LinkedIn Experience"))
+        if linkedin_experiences:
+            # Validation: cross-check with resume experience companies
+            resume_companies = set()
+            for e in a.resume.experience:
+                if e.company:
+                    resume_companies.add(e.company.lower().strip())
+            
+            rows = [["Position", "Company", "Duration", "Validated"]]
+            for exp in linkedin_experiences[:8]:  # limit to 8 most recent
+                company = exp.get("company") or "—"
+                is_validated = "✓" if company.lower().strip() in resume_companies else "—"
+                duration = f"{exp.get('from_date') or '—'} – {exp.get('to_date') or 'Present'}"
+                if exp.get("duration"):
+                    duration += f" ({exp['duration']})"
+                rows.append([
+                    Paragraph(exp.get("position_title") or "—", st["cell"]),
+                    Paragraph(company, st["cell"]),
+                    Paragraph(duration, st["cell"]),
+                    Paragraph(is_validated, st["cell"]),
+                ])
+            story.append(_table(rows, [45 * mm, 55 * mm, 55 * mm, 15 * mm]))
+            
+            # Show descriptions for first 3
+            for exp in linkedin_experiences[:3]:
+                desc = exp.get("description")
+                if desc:
+                    story.append(Spacer(1, 2))
+                    story.append(Paragraph(f"<b>{exp.get('position_title', 'Role')} @ {exp.get('company', '')}</b>", st["small"]))
+                    story.append(Paragraph(desc[:500] + ("..." if len(desc) > 500 else ""), st["small"]))
+        else:
+            story.append(Paragraph("No experience listed on the connected LinkedIn profile.", st["body"]))
+        story.append(Spacer(1, 4))
+
+        # --- 11. LinkedIn Skills ---
+        story.append(_section_header("11. LinkedIn Skills"))
+        if linkedin_skills:
+            # Validation: cross-check with resume skills
+            resume_skill_names = set(s.lower().strip() for s in a.resume.all_skill_names())
+            
+            rows = [["Skill", "Endorsements", "In Resume"]]
+            for skill in linkedin_skills[:15]:  # top 15
+                skill_name = skill.get("name") or "—"
+                endorsements = str(skill.get("endorsements") or 0)
+                in_resume = "✓" if skill_name.lower().strip() in resume_skill_names else "—"
+                rows.append([
+                    Paragraph(skill_name, st["cell"]),
+                    Paragraph(endorsements, st["cell"]),
+                    Paragraph(in_resume, st["cell"]),
+                ])
+            story.append(_table(rows, [100 * mm, 25 * mm, 15 * mm]))
+        else:
+            story.append(Paragraph("No skills listed on the connected LinkedIn profile.", st["body"]))
+        story.append(Spacer(1, 4))
+
+    # ---------- 12. Strengths ----------
+    story.append(_section_header("12. Strengths"))
     for s in a.strengths:
         story.append(Paragraph(f"• {s}", st["body"]))
 
-    # ---------- 11. Improvement Areas ----------
-    story.append(_section_header("11. Improvement Areas"))
+    # ---------- 13. Improvement Areas ----------
+    story.append(_section_header("13. Improvement Areas"))
     for s in a.improvements:
         story.append(Paragraph(f"• {s}", st["body"]))
 
-    # ---------- 12. AI Summary ----------
-    story.append(_section_header("12. AI Summary"))
+    # ---------- 14. AI Summary ----------
+    story.append(_section_header("14. AI Summary"))
     for key, label in [("technical_strengths", "Technical Strengths"), ("engineering_profile", "Engineering Profile"),
                        ("coding_ability", "Coding Ability"), ("project_quality", "Project Quality"),
                        ("collaboration_indicators", "Collaboration Indicators"),
@@ -390,9 +467,9 @@ def render_pdf(report) -> bytes:
             story.append(Paragraph(f"<b>{label}:</b> {a.ai_summary[key]}", st["body"]))
             story.append(Spacer(1, 3))
 
-    # ---------- 13. Final Scores ----------
+    # ---------- 15. Final Scores ----------
     story.append(PageBreak())
-    story.append(_section_header("13. Final Scores"))
+    story.append(_section_header("15. Final Scores"))
     score_items = a.scores
     story.append(RadarChart([(s.label.replace(" Score", ""), s.value) for s in score_items], size=165))
     story.append(Spacer(1, 10))
