@@ -69,6 +69,30 @@ export interface Achievement {
   date?: string | null;
 }
 
+export interface HiddenSpan {
+  text: string;
+  reason: "white_text" | "tiny_font" | "zero_size" | "covered" | "vanish_hidden" | "white_highlight";
+  page: number | null;
+  detail: string;
+}
+
+export interface InjectionFlag {
+  phrase: string;
+  category: "directive_override" | "role_manipulation" | "scoring_manipulation" | "output_manipulation";
+  index: number;
+  severity: "low" | "high";
+}
+
+export interface IntegrityReport {
+  is_suspicious: boolean;
+  severity: "none" | "low" | "medium" | "high";
+  confidence: number;
+  hidden_spans: HiddenSpan[];
+  injection_flags: InjectionFlag[];
+  keyword_stuffing: boolean;
+  notes: string[];
+}
+
 export interface ParsedResume {
   personal: PersonalDetails;
   education: Education[];
@@ -77,6 +101,7 @@ export interface ParsedResume {
   projects: Project[];
   achievements: Achievement[];
   raw_text: string;
+  integrity: IntegrityReport | null;
 }
 
 export interface ConnectedProfile {
@@ -245,6 +270,7 @@ export interface ResumeBatchCandidate {
   overall_score?: number;
   rank?: number;
   scores?: ScoreItem[];
+  integrity: IntegrityReport | null;
 }
 
 /** Server response for batch upload and batch validate. */

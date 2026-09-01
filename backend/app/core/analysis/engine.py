@@ -97,6 +97,11 @@ def run_analysis(
 
     on_stage("scoring", "Computing verification scores…")
     bundle.strengths, bundle.improvements = _strengths_and_improvements(bundle)
+    # Flag potential resume manipulation (hidden/injected text, prompt injection)
+    if resume.integrity and resume.integrity.is_suspicious:
+        bundle.improvements.append(
+            "Potential manipulation detected in the resume document; scores reflect public evidence only."
+        )
     bundle.scores = compute_scores(bundle)
     bundle.overall_score = compute_overall(bundle, bundle.scores)
 
