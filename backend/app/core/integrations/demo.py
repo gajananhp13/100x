@@ -71,6 +71,7 @@ DEMO_PROFILES: dict[str, str] = {
     "portfolio": "aaravmehta.dev",
     "devpost": "aaravmehta",
     "leetcode": "aaravmehta",
+    "interviewbit": "aaravmehta",
     "codeforces": "aaravmehta",
     "codechef": "aaravmehta",
     "geeksforgeeks": "aaravmehta",

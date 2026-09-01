@@ -10,7 +10,7 @@ import {
   siHackerrank,
   siStackoverflow,
 } from "simple-icons";
-import { cn } from "./ui";
+import { cn } from "@/lib/cn";
 
 const BRAND_BG: Record<string, string> = {
   github: "#0d1117",

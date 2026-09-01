@@ -1,5 +1,7 @@
 from pydantic import BaseModel, Field
 
+from ..core.parsers.integrity import IntegrityReport
+
 
 class PersonalDetails(BaseModel):
     name: str | None = None
@@ -77,6 +79,7 @@ class ParsedResume(BaseModel):
     projects: list[Project] = Field(default_factory=list)
     achievements: list[Achievement] = Field(default_factory=list)
     raw_text: str = ""
+    integrity: IntegrityReport | None = None
 
     def all_skill_names(self) -> list[str]:
         seen: list[str] = []

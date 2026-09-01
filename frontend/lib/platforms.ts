@@ -12,7 +12,7 @@ export const PLATFORM_DEFS: PlatformDef[] = [
   { id: "codeforces", label: "Codeforces", icon: "cf", url_template: "https://codeforces.com/profile/{handle}", handle_placeholder: "handle", real_api: false },
   { id: "codechef", label: "CodeChef", icon: "cc", url_template: "https://codechef.com/users/{handle}", handle_placeholder: "username", real_api: false },
   { id: "geeksforgeeks", label: "GeeksforGeeks", icon: "gg", url_template: "https://auth.geeksforgeeks.org/user/{handle}", handle_placeholder: "username", real_api: false },
-  { id: "hackerrank", label: "HackerRank", icon: "hr", url_template: "https://hackerrank.com/{handle}", handle_placeholder: "username", real_api: false },
+  { id: "hackerrank", label: "HackerRank", icon: "hr", url_template: "https://hackerrank.com/{handle}", handle_placeholder: "username", real_api: true },
   { id: "stackoverflow", label: "Stack Overflow", icon: "so", url_template: "https://stackoverflow.com/users/{handle}", handle_placeholder: "user id", real_api: false },
 ];
 

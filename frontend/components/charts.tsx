@@ -35,8 +35,8 @@ export function RadarChart({
     <svg width={size} height={size} role="img" aria-label="Score radar chart">
       <defs>
         <linearGradient id={`${uid}-fill`} x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%" stopColor="#5b5bd6" stopOpacity="0.35" />
-          <stop offset="100%" stopColor="#5b5bd6" stopOpacity="0.12" />
+          <stop offset="0%" stopColor="#2563eb" stopOpacity="0.28" />
+          <stop offset="100%" stopColor="#2563eb" stopOpacity="0.08" />
         </linearGradient>
       </defs>
 
@@ -45,18 +45,18 @@ export function RadarChart({
           key={f}
           points={items.map((_, i) => pt(i, r * f).join(",")).join(" ")}
           fill="none"
-          stroke="#e6e8ef"
-          strokeWidth={f === 1 ? 1.2 : 0.8}
+          stroke="#e1e4eb"
+          strokeWidth={f === 1 ? 1.1 : 0.7}
         />
       ))}
       {items.map((_, i) => {
         const [x, y] = pt(i, r);
-        return <line key={i} x1={cx} y1={cy} x2={x} y2={y} stroke="#e6e8ef" strokeWidth={0.8} />;
+        return <line key={i} x1={cx} y1={cy} x2={x} y2={y} stroke="#e1e4eb" strokeWidth={0.7} />;
       })}
 
-      <polygon points={poly.map((p) => p.join(",")).join(" ")} fill={`url(#${uid}-fill)`} stroke="#4545c9" strokeWidth={2} strokeLinejoin="round" />
+      <polygon points={poly.map((p) => p.join(",")).join(" ")} fill={`url(#${uid}-fill)`} stroke="#1d4ed8" strokeWidth={2} strokeLinejoin="round" />
       {poly.map(([x, y], i) => (
-        <circle key={i} cx={x} cy={y} r={3.2} fill="#5b5bd6" stroke="#fff" strokeWidth={1.2} />
+        <circle key={i} cx={x} cy={y} r={3.2} fill="#2563eb" stroke="#fff" strokeWidth={1.2} />
       ))}
 
       {labelPos.map(({ label, x, y }, i) => (
@@ -67,7 +67,7 @@ export function RadarChart({
           textAnchor={x < cx - 4 ? "end" : x > cx + 4 ? "start" : "middle"}
           dominantBaseline="middle"
           fontSize={labelSize}
-          fill="#626b7e"
+          fill="#475569"
           fontWeight={500}
         >
           {label}

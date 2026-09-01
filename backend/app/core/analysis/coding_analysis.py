@@ -14,7 +14,7 @@ from ...models.analysis import CodingAnalysis, CodingPlatformProfile
 from ...models.profiles import ConnectedProfile
 from ..integrations.registry import PLATFORM_BY_ID
 
-CODING_PLATFORMS = ("leetcode", "codeforces", "codechef", "geeksforgeeks", "hackerrank")
+CODING_PLATFORMS = ("leetcode", "codeforces", "codechef", "geeksforgeeks", "hackerrank", "interviewbit")
 
 # Static aggregation weights per spec §10.
 _SCORERS: dict[str, tuple[float]] = {
@@ -23,6 +23,7 @@ _SCORERS: dict[str, tuple[float]] = {
     "codechef": (0.15,),
     "hackerrank": (0.15,),
     "geeksforgeeks": (0.10,),
+    "interviewbit": (0.15,),
 }
 
 # ---------------------------------------------------------------------------
@@ -285,12 +286,57 @@ def _score_hackerrank(s: dict) -> float:
     return round(raw, 1)
 
 
+def _score_interviewbit(s: dict) -> float:
+    """InterviewBit: 40% global rank, 30% volume, 20% score, 10% streak — capped at 90."""
+    global_rank = s.get("global_rank")
+    try:
+        rank_val = int(global_rank) if global_rank is not None else 0
+    except (TypeError, ValueError):
+        rank_val = 0
+    problems = int(s.get("problems_solved", 0) or s.get("total_problems_solved", 0) or 0)
+    ib_score = int(s.get("score", 0) or s.get("total_user_score", 0) or 0)
+    streak = int(s.get("current_streak", 0) or s.get("streak_days", 0) or 0)
+
+    # Rank: lower is better. Map log scale with max 600k.
+    rank_score: float | None = None
+    if rank_val and rank_val > 0:
+        max_rank = 600000.0
+        clamped = min(float(rank_val), max_rank)
+        # Invert log: 1 -> 100, max -> 0
+        rank_score = _clamp(100.0 * (1.0 - math.log1p(clamped) / math.log1p(max_rank)))
+
+    vol_score = _log_norm(float(problems), 300) if problems > 0 else None
+    score_norm = _linear_norm(float(ib_score), 3000) if ib_score > 0 else None
+    streak_score = _log_norm(float(streak), 60) if streak > 0 else None
+
+    activity = _weighted_avg([(score_norm, 0.65), (streak_score, 0.35)])
+    # If neither score nor streak, activity None
+    components: list[tuple[float | None, float]] = [
+        (rank_score, 0.40),
+        (vol_score, 0.30),
+        (activity, 0.30),
+    ]
+    available = [(v, w) for v, w in components if v is not None]
+    if not available:
+        return 0.0
+    is_vol_only = rank_score is None
+    total_w = sum(w for _, w in available)
+    raw = sum(v * w for v, w in available) / total_w
+    raw = _clamp(raw)
+    if is_vol_only:
+        raw = min(raw, 60.0)
+    else:
+        raw = min(raw, 90.0)
+    return round(raw, 1)
+
+
 _SCORERS_IMPL = {
     "leetcode": _score_leetcode,
     "codeforces": _score_codeforces,
     "codechef": _score_codechef,
     "geeksforgeeks": _score_geeksforgeeks,
     "hackerrank": _score_hackerrank,
+    "interviewbit": _score_interviewbit,
 }
 
 
@@ -329,6 +375,12 @@ def _platform_detail(pid: str, s: dict) -> str:
     if pid == "hackerrank":
         stars = int(s.get("stars", 0) or 0)
         return f"HackerRank {stars}★"
+    if pid == "interviewbit":
+        rank = s.get("global_rank")
+        solved = int(s.get("problems_solved", 0) or 0)
+        if rank:
+            return f"InterviewBit #{rank} ({solved} solved)"
+        return f"InterviewBit {solved} solved"
     return pid
 
 

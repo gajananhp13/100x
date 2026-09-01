@@ -6,7 +6,7 @@ from fastapi.concurrency import run_in_threadpool
 
 from ..config import settings
 from ..core.ai import get_ai_provider
-from ..core.parsers import SUPPORTED_EXTENSIONS, UnsupportedFileError, extract_text
+from ..core.parsers import SUPPORTED_EXTENSIONS, UnsupportedFileError, extract_and_scan
 from ..models.report import MessageOut
 from ..models.resume import ParsedResume
 from ..models.resume import PersonalDetails  # noqa: F401 (schema reference)
@@ -33,8 +33,8 @@ async def upload_resume(file: UploadFile = File(...)) -> dict:
     try:
         # PDF/DOCX parsing is CPU-bound and can hang on malformed documents;
         # run it off the event loop so one bad upload cannot block the server.
-        text = await asyncio.wait_for(
-            run_in_threadpool(extract_text, data, filename),
+        text, integrity = await asyncio.wait_for(
+            run_in_threadpool(extract_and_scan, data, filename),
             timeout=settings.document_parse_timeout_seconds,
         )
     except TimeoutError:
@@ -44,16 +44,27 @@ async def upload_resume(file: UploadFile = File(...)) -> dict:
         ) from None
     except UnsupportedFileError as e:
         raise HTTPException(status_code=415, detail=str(e)) from e
-    except Exception:
-        raise HTTPException(status_code=422, detail="Could not read text from the document. It may be a scanned image — try a text-based PDF.")
+    except Exception as exc:
+        logger.exception("Document extraction failed for %s: %s", filename, exc)
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Could not extract text from '{file.filename}'. "
+                "Make sure the file is a text-based PDF or DOCX (not a scanned image or image-only PDF). "
+                f"Details: {type(exc).__name__}: {exc}"
+            ),
+        )
     if len(text.strip()) < 50:
         raise HTTPException(status_code=422, detail="No readable text found in the document.")
+    # Attach integrity flags to the response so the HR UI can surface them
+    integrity_payload = integrity.model_dump() if integrity else {}
     return {
         "message": "Resume uploaded and text extracted.",
         "filename": filename,
         "char_count": len(text),
         "text": text,
         "text_preview": text[:4000],
+        "integrity": integrity_payload,
     }
 
 
@@ -124,8 +135,8 @@ async def upload_resume_batch(files: list[UploadFile] = File(...)) -> dict:
             errors.append({"filename": display_name, "detail": "File exceeds the 10 MB limit."})
             continue
         try:
-            text = await asyncio.wait_for(
-                run_in_threadpool(extract_text, data, filename),
+            text, integrity = await asyncio.wait_for(
+                run_in_threadpool(extract_and_scan, data, filename),
                 timeout=settings.document_parse_timeout_seconds,
             )
         except TimeoutError:
@@ -147,6 +158,8 @@ async def upload_resume_batch(files: list[UploadFile] = File(...)) -> dict:
         except Exception as e:
             errors.append({"filename": display_name, "detail": f"Could not parse this resume: {e}"})
             continue
+        # Attach integrity report so the HR dashboard can surface warnings
+        resume.integrity = integrity
         candidates.append(
             {
                 "index": idx,
