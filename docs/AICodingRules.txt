@@ -1,0 +1,25 @@
+# AI Development Rules
+
+1. Do not modify unrelated files.
+
+2. Before implementing a major feature, explain the implementation plan.
+
+3. Follow the architecture defined in /docs.
+
+4. Do not introduce new dependencies without explaining why.
+
+5. Reuse existing utilities instead of duplicating logic.
+
+6. Keep business logic separate from API routes.
+
+7. Add proper error handling.
+
+8. Never hardcode API keys or secrets.
+
+9. Update relevant tests when modifying functionality.
+
+10. After implementation, summarize:
+   - Files changed
+   - What changed
+   - How to test it
+   - Known limitations
